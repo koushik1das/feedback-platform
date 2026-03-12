@@ -1,0 +1,12 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+pydantic==2.7.1
+scikit-learn==1.5.0
+numpy==1.26.4
+anthropic==0.28.0   # optional – for AI summary generation
+httpx==0.27.0        # used internally by fastapi TestClient
+pytest==8.2.0
+pytest-asyncio==0.23.7
+requests==2.32.3
+trino==0.329.0              # direct Trino DB connection
+pandas==2.2.2               # DataFrame for Trino result handling

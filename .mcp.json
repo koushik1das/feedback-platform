@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "superset-prod": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp-superset.platform.mypaytm.com/message",
+        "--allow-http"
+      ],
+      "env": {}
+    }
+  }
+}
