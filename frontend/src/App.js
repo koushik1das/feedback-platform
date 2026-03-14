@@ -1,69 +1,72 @@
 /**
  * App.js – Root application component.
  *
- * State machine:
- *   idle      → user selects channels
- *   loading   → API call in progress
- *   results   → insights displayed
- *   error     → API call failed
+ * Channels:
+ *   app_store → Google Play MCP (TODO: wire MCP when available)
+ *   helpdesk  → Trino via /api/helpdesk/analyse
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import axios from 'axios';
 
 import ChannelSelector from './components/ChannelSelector';
-import TopIssues       from './components/TopIssues';
-import SentimentChart  from './components/SentimentChart';
-import IssueCards      from './components/IssueCards';
+import TopIssues        from './components/TopIssues';
+import EscalationStats  from './components/EscalationStats';
+import IssueList        from './components/IssueList';
 import FeedbackTable   from './components/FeedbackTable';
 
 const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
 
 export default function App() {
-  const [channels,    setChannels]    = useState([]);
-  const [selectedIds, setSelectedIds] = useState(new Set());
-  const [insights,    setInsights]    = useState(null);
-  const [rawFeedback, setRawFeedback] = useState([]);
-  const [loading,     setLoading]     = useState(false);
-  const [error,       setError]       = useState(null);
+  const [selectedChannel,  setSelectedChannel]  = useState(null);
+  const [helpdeskProduct,  setHelpdeskProduct]  = useState(null);
+  const [insights,         setInsights]         = useState(null);
+  const [rawFeedback,      setRawFeedback]      = useState([]);
+  const [loading,          setLoading]          = useState(false);
+  const [error,            setError]            = useState(null);
 
-  // Fetch channel metadata on mount
-  useEffect(() => {
-    axios.get(`${API_BASE}/channels`)
-      .then((r) => setChannels(r.data))
-      .catch(() => setError('Could not connect to the backend. Is the server running on port 8000?'));
+  const handleSelectChannel = useCallback((id) => {
+    setSelectedChannel(id);
+    setHelpdeskProduct(null);
+    setInsights(null);
+    setRawFeedback([]);
+    setError(null);
   }, []);
 
-  const toggleChannel = useCallback((id) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
-    // Clear results when channel selection changes
+  const handleSelectProduct = useCallback((product) => {
+    setHelpdeskProduct(product);
     setInsights(null);
     setRawFeedback([]);
     setError(null);
   }, []);
 
   const handleAnalyse = useCallback(async () => {
-    if (selectedIds.size === 0) return;
     setLoading(true);
     setError(null);
     setInsights(null);
     setRawFeedback([]);
 
     try {
-      const [insightsRes, feedbackRes] = await Promise.all([
-        axios.post(`${API_BASE}/analyse`, { channels: Array.from(selectedIds) }),
-        axios.get(`${API_BASE}/feedback`, {
-          params: { channels: Array.from(selectedIds), limit: 200 },
-          // axios serialises array params differently; use paramsSerializer
-          paramsSerializer: { indexes: null },
-        }),
-      ]);
-      setInsights(insightsRes.data);
-      setRawFeedback(feedbackRes.data);
+      if (selectedChannel === 'helpdesk') {
+        // ── Helpdesk → Trino ──────────────────────────────────────────────
+        const res = await axios.post(`${API_BASE}/helpdesk/analyse`, {
+          product: helpdeskProduct,
+        });
+        setInsights(res.data);
+
+      } else if (selectedChannel === 'app_store') {
+        // ── App Store → Google Play MCP (TODO) ───────────────────────────
+        // Placeholder: falls back to mock analyse endpoint until MCP is wired
+        const [insightsRes, feedbackRes] = await Promise.all([
+          axios.post(`${API_BASE}/analyse`, { channels: ['app_store'] }),
+          axios.get(`${API_BASE}/feedback`, {
+            params: { channels: ['app_store'], limit: 200 },
+            paramsSerializer: { indexes: null },
+          }),
+        ]);
+        setInsights(insightsRes.data);
+        setRawFeedback(feedbackRes.data);
+      }
     } catch (e) {
       setError(
         e.response?.data?.detail ||
@@ -72,7 +75,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [selectedIds]);
+  }, [selectedChannel, helpdeskProduct]);
 
   return (
     <div className="app-wrapper">
@@ -104,9 +107,10 @@ export default function App() {
 
         {/* ── Channel selector ── */}
         <ChannelSelector
-          channels={channels}
-          selectedIds={selectedIds}
-          onToggle={toggleChannel}
+          selectedChannel={selectedChannel}
+          helpdeskProduct={helpdeskProduct}
+          onSelectChannel={handleSelectChannel}
+          onSelectProduct={handleSelectProduct}
           onAnalyse={handleAnalyse}
           loading={loading}
         />
@@ -132,25 +136,16 @@ export default function App() {
             {/* Summary stats */}
             <div className="stats-row">
               <div className="stat-card">
-                <div className="stat-label">Total Feedback</div>
-                <div className="stat-value stat-primary">{insights.total_feedback}</div>
+                <div className="stat-label">Sessions</div>
+                <div className="stat-value stat-primary">{insights.total_feedback.toLocaleString()}</div>
                 <div className="stat-sub">{insights.channels_analysed.join(', ')}</div>
               </div>
               <div className="stat-card">
-                <div className="stat-label">Top Issue</div>
-                <div className="stat-value" style={{ fontSize: '1.1rem', lineHeight: 1.3, marginTop: '.25rem' }}>
-                  {insights.top_issues[0]?.label || '—'}
-                </div>
-                <div className="stat-sub">{insights.top_issues[0]?.percentage}% of complaints</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Negative Sentiment</div>
+                <div className="stat-label">Social Media Threat</div>
                 <div className="stat-value stat-negative">
-                  {insights.sentiment_distribution.total > 0
-                    ? Math.round(insights.sentiment_distribution.negative / insights.sentiment_distribution.total * 100)
-                    : 0}%
+                  {(insights.social_media_threat_pct ?? 0).toFixed(2)}%
                 </div>
-                <div className="stat-sub">{insights.sentiment_distribution.negative} unhappy customers</div>
+                <div className="stat-sub">{(insights.social_media_threat_count ?? 0).toLocaleString()} threat mentions</div>
               </div>
               <div className="stat-card">
                 <div className="stat-label">Issue Categories</div>
@@ -182,17 +177,11 @@ export default function App() {
               </div>
             )}
 
-            {/* Charts row */}
-            <div className="dashboard-grid">
-              <TopIssues issues={insights.top_issues} />
-              <SentimentChart distribution={insights.sentiment_distribution} />
-            </div>
+            {/* Issue list */}
+            <IssueList issues={insights.top_issues} />
 
-            {/* Issue detail cards */}
-            <IssueCards issues={insights.top_issues} />
-
-            {/* Raw feed table */}
-            <FeedbackTable items={rawFeedback} />
+            {/* Raw feed table — only shown for App Store (Helpdesk uses Trino, no raw items) */}
+            {rawFeedback.length > 0 && <FeedbackTable items={rawFeedback} />}
           </>
         )}
 
@@ -200,7 +189,7 @@ export default function App() {
         {!insights && !loading && !error && (
           <div className="empty-state">
             <div className="empty-state-icon">📡</div>
-            <h3>Select channels above and click Analyse</h3>
+            <h3>Select a channel above and click Analyse</h3>
             <p>The platform will aggregate feedback, detect issues, and present AI-powered insights.</p>
           </div>
         )}

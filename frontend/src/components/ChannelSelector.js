@@ -1,74 +1,111 @@
 /**
  * ChannelSelector
- * Renders a grid of selectable channel cards.
+ * Shows only App Store and Helpdesk.
+ * When Helpdesk is selected a product sub-selector appears (Loan / Payments / Settlement).
+ *
  * Props:
- *   channels       – array of channel metadata objects from the API
- *   selectedIds    – Set of currently selected channel IDs
- *   onToggle(id)   – callback when a card is clicked
- *   onAnalyse()    – callback when "Analyse" button is clicked
- *   loading        – bool, disables button while analysis is running
+ *   selectedChannel    – "app_store" | "helpdesk" | null
+ *   helpdeskProduct    – "loan" | "payments" | "settlement" | null
+ *   onSelectChannel(id)
+ *   onSelectProduct(p)
+ *   onAnalyse()
+ *   loading
  */
 
 import React from 'react';
 
-const CHANNEL_ICONS = {
-  app_store:    '⭐',
-  social_media: '💬',
-  helpdesk:     '🎧',
-  email:        '✉️',
-  chatbot:      '🤖',
-};
+const CHANNELS = [
+  {
+    id:          'app_store',
+    name:        'App Store',
+    icon:        '⭐',
+    description: 'Google Play reviews & ratings',
+    color:       '#f0fdf4',
+  },
+  {
+    id:          'helpdesk',
+    name:        'Help Desk',
+    icon:        '🎧',
+    description: 'Customer support interactions',
+    color:       '#fefce8',
+  },
+];
 
-const CHANNEL_COLORS = {
-  app_store:    '#f0fdf4',
-  social_media: '#eff6ff',
-  helpdesk:     '#fefce8',
-  email:        '#fdf4ff',
-  chatbot:      '#f0f9ff',
-};
+const PRODUCTS = [
+  { id: 'loan',                label: 'Loan',                   icon: '🏦' },
+  { id: 'payments_settlement', label: 'Payments & Settlement',  icon: '💳' },
+];
 
-export default function ChannelSelector({ channels, selectedIds, onToggle, onAnalyse, loading }) {
-  const anySelected = selectedIds.size > 0;
+export default function ChannelSelector({
+  selectedChannel,
+  helpdeskProduct,
+  onSelectChannel,
+  onSelectProduct,
+  onAnalyse,
+  loading,
+}) {
+  const canAnalyse =
+    selectedChannel === 'app_store' ||
+    (selectedChannel === 'helpdesk' && helpdeskProduct !== null);
 
   return (
     <div className="channel-section">
-      <h2>Select Feedback Channels</h2>
-      <p>Choose one or more channels to analyse. The system will fetch, aggregate, and surface top customer pain points.</p>
+      <h2>Select Feedback Channel</h2>
+      <p>Choose a channel to analyse. The platform will surface top customer pain points.</p>
 
-      <div className="channel-grid">
-        {channels.map((ch) => {
-          const isSelected = selectedIds.has(ch.id);
+      {/* ── Channel cards ── */}
+      <div className="channel-grid" style={{ gridTemplateColumns: 'repeat(2, minmax(200px, 280px))' }}>
+        {CHANNELS.map((ch) => {
+          const isSelected = selectedChannel === ch.id;
           return (
             <div
               key={ch.id}
               className={`channel-card ${isSelected ? 'selected' : ''}`}
-              onClick={() => onToggle(ch.id)}
-              role="checkbox"
+              onClick={() => onSelectChannel(ch.id)}
+              role="radio"
               aria-checked={isSelected}
               tabIndex={0}
-              onKeyDown={(e) => e.key === 'Enter' && onToggle(ch.id)}
+              onKeyDown={(e) => e.key === 'Enter' && onSelectChannel(ch.id)}
               style={{ borderColor: isSelected ? '#6366f1' : undefined }}
             >
               <div
                 className={`channel-card-icon ${isSelected ? 'check-mark' : ''}`}
-                style={{ background: CHANNEL_COLORS[ch.id] || '#f1f5f9' }}
+                style={{ background: ch.color }}
               >
-                {CHANNEL_ICONS[ch.id] || '📋'}
+                {ch.icon}
               </div>
               <div className="channel-card-name">{ch.name}</div>
               <div className="channel-card-desc">{ch.description}</div>
-              <div className="channel-card-badge">
-                {ch.sample_count} items
-              </div>
             </div>
           );
         })}
       </div>
 
+      {/* ── Helpdesk product sub-selector ── */}
+      {selectedChannel === 'helpdesk' && (
+        <div className="product-selector">
+          <p className="product-selector-label">Select Product</p>
+          <div className="product-pills">
+            {PRODUCTS.map((p) => (
+              <button
+                key={p.id}
+                className={`product-pill ${helpdeskProduct === p.id ? 'active' : ''}`}
+                onClick={() => onSelectProduct(p.id)}
+              >
+                <span>{p.icon}</span>
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Analyse button ── */}
       <button
         className="analyse-btn"
         onClick={onAnalyse}
-        disabled={!anySelected || loading}
+        disabled={!canAnalyse || loading}
+        style={{ marginTop: '1.5rem' }}
       >
         {loading ? (
           <>
@@ -78,7 +115,12 @@ export default function ChannelSelector({ channels, selectedIds, onToggle, onAna
         ) : (
           <>
             <span>🔍</span>
-            Analyse {selectedIds.size > 0 ? `(${selectedIds.size} channel${selectedIds.size > 1 ? 's' : ''})` : ''}
+            Analyse
+            {selectedChannel === 'helpdesk' && helpdeskProduct
+              ? ` · ${PRODUCTS.find((p) => p.id === helpdeskProduct)?.label}`
+              : selectedChannel === 'app_store'
+              ? ' · App Store'
+              : ''}
           </>
         )}
       </button>

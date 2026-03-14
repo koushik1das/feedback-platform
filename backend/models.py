@@ -71,19 +71,30 @@ class SentimentDistribution(BaseModel):
 
 class InsightsResponse(BaseModel):
     """Full analytics payload returned by the API."""
-    total_feedback:          int
-    channels_analysed:       List[str]
-    top_issues:              List[IssueStats]
-    sentiment_distribution:  SentimentDistribution
-    trending_issues:         List[str]
-    ai_summary:              str
-    generated_at:            datetime
+    total_feedback:             int
+    channels_analysed:          List[str]
+    top_issues:                 List[IssueStats]
+    sentiment_distribution:     SentimentDistribution
+    trending_issues:            List[str]
+    ai_summary:                 str
+    generated_at:               datetime
+    social_media_threat_count:  Optional[int]  = None
+    social_media_threat_pct:    Optional[float] = None
 
 
 # ── Request / Response models for the API ────────────────────────────────────
 
 class AnalyseRequest(BaseModel):
     channels: List[ChannelType]
+
+
+class HelpdeskProduct(str, Enum):
+    LOAN                = "loan"
+    PAYMENTS_SETTLEMENT = "payments_settlement"
+
+
+class HelpdeskAnalyseRequest(BaseModel):
+    product: HelpdeskProduct
 
 
 class ChannelInfo(BaseModel):

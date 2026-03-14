@@ -17,11 +17,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from models import (
     AnalyseRequest, InsightsResponse, ChannelInfo,
-    ChannelType, FeedbackItem,
+    ChannelType, FeedbackItem, HelpdeskAnalyseRequest,
 )
 from ingestion.aggregator import aggregate_feedback, get_channel_sample_counts
 from analysis.clustering import categorise_feedback
 from analysis.insights import generate_insights
+from ingestion.trino_helpdesk import fetch_helpdesk_insights
 
 router = APIRouter()
 
@@ -108,6 +109,19 @@ def analyse_channels(request: AnalyseRequest):
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+@router.post("/helpdesk/analyse", response_model=InsightsResponse, tags=["helpdesk"])
+def analyse_helpdesk(request: HelpdeskAnalyseRequest):
+    """
+    Query Trino for the selected helpdesk product and return structured insights.
+    Products: loan → p4bbusinessloan, payments, settlement
+    """
+    try:
+        data = fetch_helpdesk_insights(request.product.value)
+        return InsightsResponse(**data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Trino query failed: {str(e)}")
 
 
 @router.get("/feedback", response_model=List[FeedbackItem], tags=["feedback"])
