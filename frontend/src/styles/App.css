@@ -469,6 +469,24 @@ tbody tr:hover { background: #fafafe; }
   gap: .75rem;
 }
 
+/* ── Markdown in chat bubbles ────────────────────────────────── */
+.md-bubble p          { margin: 0 0 .4em; }
+.md-bubble p:last-child { margin-bottom: 0; }
+.md-bubble strong     { font-weight: 700; }
+.md-bubble em         { font-style: italic; }
+.md-bubble ul, .md-bubble ol { padding-left: 1.2em; margin: .3em 0; }
+.md-bubble li         { margin-bottom: .2em; }
+.md-bubble code       { background: rgba(0,0,0,.06); border-radius: 4px; padding: 1px 5px; font-size: .85em; font-family: monospace; }
+.md-bubble pre        { background: rgba(0,0,0,.06); border-radius: 6px; padding: .5rem .75rem; overflow-x: auto; margin: .4em 0; }
+.md-bubble pre code   { background: none; padding: 0; }
+.md-bubble h1, .md-bubble h2, .md-bubble h3 { font-weight: 700; margin: .4em 0 .2em; }
+
+/* ── Drawer ──────────────────────────────────────────────────── */
+@keyframes slideInRight {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
 /* ── Spinner ─────────────────────────────────────────────────── */
 @keyframes spin { to { transform: rotate(360deg); } }
 .spinner {

@@ -53,13 +53,27 @@ class CategorisedFeedback(BaseModel):
 
 class IssueStats(BaseModel):
     """Aggregated statistics for a single issue cluster."""
-    label:           str
-    count:           int
-    percentage:      float
-    avg_sentiment:   float
-    sentiment_label: SentimentLabel
-    example_comments: List[str]
-    channels:        Dict[str, int]   # breakdown by channel
+    label:              str
+    count:              int
+    percentage:         float
+    avg_sentiment:      float
+    sentiment_label:    SentimentLabel
+    example_comments:   List[str]
+    comment_ticket_ids: Optional[List[Optional[str]]] = None  # parallel — ticket IDs
+    comment_tones:      Optional[List[Optional[str]]] = None  # parallel — merchant tones
+    comment_langs:      Optional[List[Optional[str]]] = None  # parallel — language codes
+    channels:           Dict[str, int]   # breakdown by channel
+
+
+class TranscriptMessage(BaseModel):
+    message_id:  str
+    role:        str           # "user", "assistant", "system"
+    content:     str
+    type:        Optional[str] = None
+    hidden:      bool          = False
+    cta_options: List[str]     = []
+    lang:        Optional[str] = None
+    created_at:  str
 
 
 class SentimentDistribution(BaseModel):
@@ -88,13 +102,26 @@ class AnalyseRequest(BaseModel):
     channels: List[ChannelType]
 
 
+class HelpdeskType(str, Enum):
+    MERCHANT = "merchant"
+    CUSTOMER = "customer"
+
+
 class HelpdeskProduct(str, Enum):
     LOAN                = "loan"
     PAYMENTS_SETTLEMENT = "payments_settlement"
+    SOUNDBOX            = "soundbox"
+
+
+class CustomerProduct(str, Enum):
+    TRAIN  = "train"
+    BUS    = "bus"
+    FLIGHT = "flight"
 
 
 class HelpdeskAnalyseRequest(BaseModel):
-    product: HelpdeskProduct
+    helpdesk_type: HelpdeskType
+    product:       str  # HelpdeskProduct for merchant, CustomerProduct for customer
 
 
 class ChannelInfo(BaseModel):
@@ -103,3 +130,35 @@ class ChannelInfo(BaseModel):
     description: str
     icon:        str
     sample_count: int
+
+
+class EvalItem(BaseModel):
+    key:   str
+    label: str
+    value: float
+    note:  Optional[str] = None
+
+
+class EvalResponse(BaseModel):
+    ticket_id:    str
+    eval_score:   Optional[float]       = None
+    went_right:   List[EvalItem]        = []
+    went_wrong:   List[EvalItem]        = []
+    raw_metrics:  Dict[str, Any]        = {}
+
+
+class MasterDataSection(BaseModel):
+    key:   str
+    title: str
+    icon:  str
+    data:  Dict[str, Any]
+
+
+class MasterDataResponse(BaseModel):
+    ticket_id:   str
+    customer_id: Optional[str] = None
+    cst_entity:  Optional[str] = None
+    workflow:    Optional[str] = None
+    intent:      Optional[str] = None
+    created_at:  Optional[str] = None
+    sections:    List[MasterDataSection] = []

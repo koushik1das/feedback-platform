@@ -1,12 +1,15 @@
 /**
  * ChannelSelector
- * Shows only App Store and Helpdesk.
- * When Helpdesk is selected a product sub-selector appears (Loan / Payments / Settlement).
+ * Step 1 – pick channel (App Store | Help Desk)
+ * Step 2 – if Helpdesk: pick type (Merchant | Customer)
+ * Step 3 – pick product based on type
  *
  * Props:
- *   selectedChannel    – "app_store" | "helpdesk" | null
- *   helpdeskProduct    – "loan" | "payments" | "settlement" | null
+ *   selectedChannel         – "app_store" | "helpdesk" | null
+ *   helpdeskType            – "merchant" | "customer" | null
+ *   helpdeskProduct         – product slug | null
  *   onSelectChannel(id)
+ *   onSelectHelpdeskType(t)
  *   onSelectProduct(p)
  *   onAnalyse()
  *   loading
@@ -26,34 +29,56 @@ const CHANNELS = [
     id:          'helpdesk',
     name:        'Help Desk',
     icon:        '🎧',
-    description: 'Customer support interactions',
+    description: 'Customer & merchant support interactions',
     color:       '#fefce8',
   },
 ];
 
-const PRODUCTS = [
-  { id: 'loan',                label: 'Loan',                   icon: '🏦' },
-  { id: 'payments_settlement', label: 'Payments & Settlement',  icon: '💳' },
+const HELPDESK_TYPES = [
+  { id: 'merchant', label: 'Merchant', icon: '🏪', description: 'B2B merchant support' },
+  { id: 'customer', label: 'Customer', icon: '👤', description: 'End-customer support' },
+];
+
+const MERCHANT_PRODUCTS = [
+  { id: 'loan',                label: 'Loan',                  icon: '🏦' },
+  { id: 'payments_settlement', label: 'Payments & Settlement', icon: '💳' },
+  { id: 'soundbox',            label: 'Soundbox',              icon: '🔊' },
+];
+
+const CUSTOMER_PRODUCTS = [
+  { id: 'train',  label: 'Train',  icon: '🚆' },
+  { id: 'bus',    label: 'Bus',    icon: '🚌' },
+  { id: 'flight', label: 'Flight', icon: '✈️' },
 ];
 
 export default function ChannelSelector({
   selectedChannel,
+  helpdeskType,
   helpdeskProduct,
   onSelectChannel,
+  onSelectHelpdeskType,
   onSelectProduct,
   onAnalyse,
   loading,
 }) {
+  const products = helpdeskType === 'merchant'
+    ? MERCHANT_PRODUCTS
+    : helpdeskType === 'customer'
+    ? CUSTOMER_PRODUCTS
+    : [];
+
   const canAnalyse =
     selectedChannel === 'app_store' ||
-    (selectedChannel === 'helpdesk' && helpdeskProduct !== null);
+    (selectedChannel === 'helpdesk' && helpdeskType !== null && helpdeskProduct !== null);
+
+  const selectedProductLabel = products.find(p => p.id === helpdeskProduct)?.label;
 
   return (
     <div className="channel-section">
       <h2>Select Feedback Channel</h2>
       <p>Choose a channel to analyse. The platform will surface top customer pain points.</p>
 
-      {/* ── Channel cards ── */}
+      {/* ── Step 1: Channel cards ── */}
       <div className="channel-grid" style={{ gridTemplateColumns: 'repeat(2, minmax(200px, 280px))' }}>
         {CHANNELS.map((ch) => {
           const isSelected = selectedChannel === ch.id;
@@ -81,12 +106,33 @@ export default function ChannelSelector({
         })}
       </div>
 
-      {/* ── Helpdesk product sub-selector ── */}
+      {/* ── Step 2: Helpdesk type (Merchant / Customer) ── */}
       {selectedChannel === 'helpdesk' && (
         <div className="product-selector">
-          <p className="product-selector-label">Select Product</p>
+          <p className="product-selector-label">Select Helpdesk Type</p>
           <div className="product-pills">
-            {PRODUCTS.map((p) => (
+            {HELPDESK_TYPES.map((t) => (
+              <button
+                key={t.id}
+                className={`product-pill ${helpdeskType === t.id ? 'active' : ''}`}
+                onClick={() => onSelectHelpdeskType(t.id)}
+              >
+                <span>{t.icon}</span>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Step 3: Product sub-selector ── */}
+      {selectedChannel === 'helpdesk' && helpdeskType !== null && (
+        <div className="product-selector">
+          <p className="product-selector-label">
+            Select {helpdeskType === 'merchant' ? 'Product' : 'Category'}
+          </p>
+          <div className="product-pills">
+            {products.map((p) => (
               <button
                 key={p.id}
                 className={`product-pill ${helpdeskProduct === p.id ? 'active' : ''}`}
@@ -116,8 +162,8 @@ export default function ChannelSelector({
           <>
             <span>🔍</span>
             Analyse
-            {selectedChannel === 'helpdesk' && helpdeskProduct
-              ? ` · ${PRODUCTS.find((p) => p.id === helpdeskProduct)?.label}`
+            {selectedChannel === 'helpdesk' && helpdeskType && selectedProductLabel
+              ? ` · ${HELPDESK_TYPES.find(t => t.id === helpdeskType)?.label} — ${selectedProductLabel}`
               : selectedChannel === 'app_store'
               ? ' · App Store'
               : ''}

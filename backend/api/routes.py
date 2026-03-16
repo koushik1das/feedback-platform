@@ -17,12 +17,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from models import (
     AnalyseRequest, InsightsResponse, ChannelInfo,
-    ChannelType, FeedbackItem, HelpdeskAnalyseRequest,
+    ChannelType, FeedbackItem, HelpdeskAnalyseRequest, HelpdeskType,
 )
 from ingestion.aggregator import aggregate_feedback, get_channel_sample_counts
 from analysis.clustering import categorise_feedback
 from analysis.insights import generate_insights
-from ingestion.trino_helpdesk import fetch_helpdesk_insights
+from ingestion.trino_helpdesk import fetch_helpdesk_insights, fetch_transcript, fetch_master_data, fetch_eval
+from models import TranscriptMessage, MasterDataResponse, EvalResponse
 
 router = APIRouter()
 
@@ -114,14 +115,52 @@ def analyse_channels(request: AnalyseRequest):
 @router.post("/helpdesk/analyse", response_model=InsightsResponse, tags=["helpdesk"])
 def analyse_helpdesk(request: HelpdeskAnalyseRequest):
     """
-    Query Trino for the selected helpdesk product and return structured insights.
-    Products: loan → p4bbusinessloan, payments, settlement
+    Query Trino for the selected helpdesk type + product and return structured insights.
+    Merchant products: loan, payments_settlement, soundbox
+    Customer products: train, bus, flight
     """
     try:
-        data = fetch_helpdesk_insights(request.product.value)
+        data = fetch_helpdesk_insights(request.product, request.helpdesk_type.value)
         return InsightsResponse(**data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Trino query failed: {str(e)}")
+
+
+@router.get("/helpdesk/masterdata/{ticket_id}", response_model=MasterDataResponse, tags=["helpdesk"])
+def get_master_data(ticket_id: str, helpdesk_type: HelpdeskType = HelpdeskType.MERCHANT):
+    """Fetch parsed master data sections for a given helpdesk ticket ID."""
+    try:
+        result = fetch_master_data(ticket_id, helpdesk_type.value)
+        if not result:
+            raise HTTPException(status_code=404, detail="No master data found for this ticket.")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Master data fetch failed: {str(e)}")
+
+
+@router.get("/helpdesk/transcript/{ticket_id}", response_model=List[TranscriptMessage], tags=["helpdesk"])
+def get_transcript(ticket_id: str, helpdesk_type: HelpdeskType = HelpdeskType.MERCHANT):
+    """Fetch all conversation messages for a given helpdesk ticket ID."""
+    try:
+        return fetch_transcript(ticket_id, helpdesk_type.value)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Transcript fetch failed: {str(e)}")
+
+
+@router.get("/helpdesk/eval/{ticket_id}", response_model=EvalResponse, tags=["helpdesk"])
+def get_eval(ticket_id: str, helpdesk_type: HelpdeskType = HelpdeskType.MERCHANT):
+    """Fetch eval score and categorised metrics for a given helpdesk ticket ID."""
+    try:
+        result = fetch_eval(ticket_id, helpdesk_type.value)
+        if not result:
+            raise HTTPException(status_code=404, detail="No eval data found for this ticket.")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Eval fetch failed: {str(e)}")
 
 
 @router.get("/feedback", response_model=List[FeedbackItem], tags=["feedback"])

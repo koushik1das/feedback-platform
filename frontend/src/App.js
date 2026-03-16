@@ -19,6 +19,7 @@ const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
 
 export default function App() {
   const [selectedChannel,  setSelectedChannel]  = useState(null);
+  const [helpdeskType,     setHelpdeskType]     = useState(null);  // 'merchant' | 'customer'
   const [helpdeskProduct,  setHelpdeskProduct]  = useState(null);
   const [insights,         setInsights]         = useState(null);
   const [rawFeedback,      setRawFeedback]      = useState([]);
@@ -27,6 +28,15 @@ export default function App() {
 
   const handleSelectChannel = useCallback((id) => {
     setSelectedChannel(id);
+    setHelpdeskType(null);
+    setHelpdeskProduct(null);
+    setInsights(null);
+    setRawFeedback([]);
+    setError(null);
+  }, []);
+
+  const handleSelectHelpdeskType = useCallback((type) => {
+    setHelpdeskType(type);
     setHelpdeskProduct(null);
     setInsights(null);
     setRawFeedback([]);
@@ -50,7 +60,8 @@ export default function App() {
       if (selectedChannel === 'helpdesk') {
         // ── Helpdesk → Trino ──────────────────────────────────────────────
         const res = await axios.post(`${API_BASE}/helpdesk/analyse`, {
-          product: helpdeskProduct,
+          helpdesk_type: helpdeskType,
+          product:       helpdeskProduct,
         });
         setInsights(res.data);
 
@@ -75,7 +86,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [selectedChannel, helpdeskProduct]);
+  }, [selectedChannel, helpdeskType, helpdeskProduct]);
 
   return (
     <div className="app-wrapper">
@@ -108,8 +119,10 @@ export default function App() {
         {/* ── Channel selector ── */}
         <ChannelSelector
           selectedChannel={selectedChannel}
+          helpdeskType={helpdeskType}
           helpdeskProduct={helpdeskProduct}
           onSelectChannel={handleSelectChannel}
+          onSelectHelpdeskType={handleSelectHelpdeskType}
           onSelectProduct={handleSelectProduct}
           onAnalyse={handleAnalyse}
           loading={loading}
@@ -178,7 +191,7 @@ export default function App() {
             )}
 
             {/* Issue list */}
-            <IssueList issues={insights.top_issues} />
+            <IssueList issues={insights.top_issues} helpdeskType={helpdeskType} />
 
             {/* Raw feed table — only shown for App Store (Helpdesk uses Trino, no raw items) */}
             {rawFeedback.length > 0 && <FeedbackTable items={rawFeedback} />}
