@@ -3,6 +3,7 @@ Trino queries for Outbound Campaign analytics.
 Table: hive.mhd_crm_cst.cs_call_details_record_snapshot_v3
 """
 
+import json as _json
 from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List
@@ -238,7 +239,37 @@ def fetch_campaign_analysis(campaign: str, date_range: str = "last_7_days") -> D
     """)
     comment_rows = cur.fetchall()
 
-    # Aggregate
+    # ── Batch-fetch function call names for all sampled sessions ─────────────
+    unique_tids = list({row[2] for row in comment_rows if row[2]})
+    fn_calls_by_tid: Dict[str, List[str]] = defaultdict(list)
+    if unique_tids:
+        tids_sql = "', '".join(t.replace("'", "''") for t in unique_tids)
+        conv_table = "hive.mhd_crm_cst.ticket_session_conversation_snapshot_v3"
+        cur.execute(f"""
+            SELECT ticket_id, content
+            FROM {conv_table}
+            WHERE ticket_id IN ('{tids_sql}')
+              AND dl_last_updated >= DATE '2025-01-01'
+              AND type = 'function_call_output'
+            ORDER BY created_at
+        """)
+        for tid, content_str in cur.fetchall():
+            fn_name = None
+            try:
+                outer = _json.loads(content_str or '{}')
+                inner_str = outer.get('content', '')
+                if isinstance(inner_str, str):
+                    inner_str = inner_str.replace('\\"', '"').replace('\\\\', '\\')
+                    inner = _json.loads(inner_str)
+                else:
+                    inner = inner_str
+                fn_name = inner.get('name') or inner.get('function_name')
+            except Exception:
+                pass
+            if fn_name and fn_name not in fn_calls_by_tid[tid]:
+                fn_calls_by_tid[tid].append(fn_name)
+
+    # ── Aggregate
     l1_data: Dict[str, Dict] = defaultdict(lambda: {"total": 0, "tone_counts": defaultdict(int)})
     for l1, tone, cnt in issue_tone_rows:
         l1_data[l1]["total"] += cnt
@@ -247,9 +278,9 @@ def fetch_campaign_analysis(campaign: str, date_range: str = "last_7_days") -> D
     comments_by_l1: Dict[str, List] = defaultdict(list)
     for l1, comment, ticket_id, tone, start_time in comment_rows:
         if l1 and comment and len(comments_by_l1[l1]) < 10:
-            # Store ISO date string (YYYY-MM-DD) from start_time for recording URL construction
             date_str = str(start_time)[:10] if start_time else None
-            comments_by_l1[l1].append((comment, ticket_id, tone, _detect_lang(comment), date_str))
+            fn_calls = fn_calls_by_tid.get(ticket_id, []) or []
+            comments_by_l1[l1].append((comment, ticket_id, tone, _detect_lang(comment), date_str, fn_calls))
 
     sorted_l1 = sorted(l1_data.items(), key=lambda x: x[1]["total"], reverse=True)
     issue_total = sum(d["total"] for _, d in sorted_l1)
@@ -262,17 +293,18 @@ def fetch_campaign_analysis(campaign: str, date_range: str = "last_7_days") -> D
         avg_score = weighted_sum / l1_total if l1_total else 0.0
         issue_comments = comments_by_l1.get(l1, [])
         top_issues.append({
-            "label":              l1,
-            "count":              l1_total,
-            "percentage":         round(l1_total / issue_total * 100, 1) if issue_total else 0.0,
-            "avg_sentiment":      round(avg_score, 2),
-            "sentiment_label":    _score_to_label(avg_score),
-            "example_comments":   [c[0] for c in issue_comments],
-            "comment_ticket_ids": [c[1] for c in issue_comments],
-            "comment_tones":      [c[2] for c in issue_comments],
-            "comment_langs":      [c[3] for c in issue_comments],
-            "comment_dates":      [c[4] for c in issue_comments],
-            "comment_ratings":    [None  for c in issue_comments],
+            "label":                  l1,
+            "count":                  l1_total,
+            "percentage":             round(l1_total / issue_total * 100, 1) if issue_total else 0.0,
+            "avg_sentiment":          round(avg_score, 2),
+            "sentiment_label":        _score_to_label(avg_score),
+            "example_comments":       [c[0] for c in issue_comments],
+            "comment_ticket_ids":     [c[1] for c in issue_comments],
+            "comment_tones":          [c[2] for c in issue_comments],
+            "comment_langs":          [c[3] for c in issue_comments],
+            "comment_dates":          [c[4] for c in issue_comments],
+            "comment_ratings":        [None  for c in issue_comments],
+            "comment_function_calls": [c[5] for c in issue_comments],
         })
 
     return {

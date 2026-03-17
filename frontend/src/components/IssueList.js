@@ -64,11 +64,12 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
             const isOpen = expanded === iss.label;
             const color  = COLORS[idx % COLORS.length];
             const rankBg = RANK_BG[idx] || '#f8fafc';
-            const ticketIds = iss.comment_ticket_ids || [];
-            const tones     = iss.comment_tones      || [];
-            const langs     = iss.comment_langs      || [];
-            const dates     = iss.comment_dates      || [];
-            const ratings   = iss.comment_ratings    || [];
+            const ticketIds   = iss.comment_ticket_ids     || [];
+            const tones       = iss.comment_tones           || [];
+            const langs       = iss.comment_langs           || [];
+            const dates       = iss.comment_dates           || [];
+            const ratings     = iss.comment_ratings         || [];
+            const fnCallsList = iss.comment_function_calls  || [];
 
             return (
               <div
@@ -146,6 +147,7 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
                           const langLabel = LANG_LABELS[lang] || (lang ? lang.toUpperCase() : null);
                           const dateStr   = dates[i] || null;
                           const rating    = ratings[i] != null ? ratings[i] : null;
+                          const fnCalls   = fnCallsList[i] || [];
 
                           return (
                             <div key={i} style={{ marginBottom: '.75rem' }}>
@@ -211,6 +213,18 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
                                     {toneMeta.label}
                                   </span>
                                 )}
+
+                                {/* Function call tags */}
+                                {fnCalls.map((fn) => (
+                                  <span key={fn} style={{
+                                    fontSize: '.68rem', fontWeight: 700,
+                                    background: '#dbeafe', color: '#1e40af',
+                                    borderRadius: 4, padding: '2px 8px',
+                                    fontFamily: 'monospace', letterSpacing: '.02em',
+                                  }}>
+                                    ⚙️ {fn}
+                                  </span>
+                                ))}
 
                                 {/* View Transcript CTA */}
                                 {ticketId && (

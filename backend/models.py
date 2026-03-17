@@ -62,9 +62,10 @@ class IssueStats(BaseModel):
     comment_ticket_ids: Optional[List[Optional[str]]]   = None  # parallel — ticket IDs
     comment_tones:      Optional[List[Optional[str]]]   = None  # parallel — merchant tones
     comment_langs:      Optional[List[Optional[str]]]   = None  # parallel — language codes
-    comment_dates:      Optional[List[Optional[str]]]   = None  # parallel — feedback dates
-    comment_ratings:    Optional[List[Optional[float]]] = None  # parallel — star ratings
-    channels:           Dict[str, int]   # breakdown by channel
+    comment_dates:          Optional[List[Optional[str]]]        = None  # parallel — feedback dates
+    comment_ratings:        Optional[List[Optional[float]]]      = None  # parallel — star ratings
+    comment_function_calls: Optional[List[Optional[List[str]]]]  = None  # parallel — function call names per session
+    channels:               Dict[str, int]   # breakdown by channel
 
 
 class TranscriptMessage(BaseModel):
