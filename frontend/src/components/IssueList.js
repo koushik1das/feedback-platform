@@ -7,6 +7,8 @@
 import React, { useState, useCallback } from 'react';
 import TranscriptModal from './TranscriptModal';
 
+const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
+
 const COLORS = [
   '#6366f1', '#8b5cf6', '#ec4899',
   '#f59e0b', '#10b981', '#3b82f6', '#ef4444',
@@ -29,11 +31,13 @@ const TONE_META = {
   satisfied:   { label: 'Satisfied',   bg: '#d1fae5', color: '#065f46' },
 };
 
-export default function IssueList({ issues, helpdeskType = 'merchant' }) {
+export default function IssueList({ issues, helpdeskType = 'merchant', showListenButton = false }) {
   const [expanded,       setExpanded]       = useState(null);
-  const [showAllMap,     setShowAllMap]     = useState({});      // label → bool
+  const [showAllMap,     setShowAllMap]     = useState({});
   const [showAllIssues,  setShowAllIssues]  = useState(true);
-  const [transcriptId,   setTranscriptId]   = useState(null);   // ticket_id being viewed
+  const [transcriptId,   setTranscriptId]   = useState(null);
+  const [playingKey,     setPlayingKey]     = useState(null);   // `${issueLabel}-${commentIdx}`
+  const [audioError,     setAudioError]     = useState(null);
 
   const toggleShowAll = useCallback((label, e) => {
     e.stopPropagation();
@@ -232,6 +236,55 @@ export default function IssueList({ issues, helpdeskType = 'merchant' }) {
                                     💬 View Transcript
                                   </button>
                                 )}
+
+                                {/* Listen to recording (campaigns only) */}
+                                {showListenButton && ticketId && dateStr && (() => {
+                                  const playKey = `${iss.label}-${i}`;
+                                  const isPlaying = playingKey === playKey;
+                                  const hasError  = audioError === playKey;
+
+                                  const [yyyy, mm, dd] = dateStr.split('-');
+                                  const dateFmt = `${dd}-${mm}-${yyyy}`;
+                                  const gatewayUrl = `https://cst-gateway-int.paytm.com/recording/obd/${dateFmt}/${ticketId}.wav`;
+                                  const proxyUrl = `${API_BASE}/campaigns/recording?recording_url=${encodeURIComponent(gatewayUrl)}`;
+
+                                  if (hasError) return (
+                                    <span style={{ fontSize: '.68rem', color: '#ef4444' }}>⚠️ Not found</span>
+                                  );
+
+                                  if (isPlaying) return (
+                                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '.3rem' }}>
+                                      <audio
+                                        src={proxyUrl}
+                                        controls
+                                        autoPlay
+                                        style={{ height: 24, width: 180 }}
+                                        onEnded={() => setPlayingKey(null)}
+                                        onError={() => { setPlayingKey(null); setAudioError(playKey); }}
+                                      />
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); setPlayingKey(null); }}
+                                        style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '.68rem', color: '#94a3b8' }}
+                                      >✕</button>
+                                    </div>
+                                  );
+
+                                  return (
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); setPlayingKey(playKey); setAudioError(null); }}
+                                      style={{
+                                        background: 'none', border: '1px solid #6366f1', borderRadius: 20,
+                                        cursor: 'pointer', fontSize: '.68rem', fontWeight: 600, color: '#6366f1',
+                                        padding: '2px 10px', display: 'inline-flex', alignItems: 'center', gap: '.25rem',
+                                        transition: 'background .15s, color .15s',
+                                      }}
+                                      onMouseEnter={(e) => { e.currentTarget.style.background = '#6366f1'; e.currentTarget.style.color = '#fff'; }}
+                                      onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#6366f1'; }}
+                                    >
+                                      🎧 Listen
+                                    </button>
+                                  );
+                                })()}
                               </div>
                             </div>
                           );

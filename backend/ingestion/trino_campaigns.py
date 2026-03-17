@@ -219,10 +219,10 @@ def fetch_campaign_analysis(campaign: str, date_range: str = "last_7_days") -> D
     """)
     issue_tone_rows = cur.fetchall()
 
-    # Sample comments per issue with ticket_id, tone, language, date
+    # Sample comments per issue — include c.start_time so UI can build recording URL
     cur.execute(f"""
         SELECT f.out_key_problem_desc, f.out_key_problem_sub_desc,
-               f.ticket_id, f.out_merchant_tone, f.dl_last_updated
+               f.ticket_id, f.out_merchant_tone, c.start_time
         FROM {CAMPAIGN_TABLE} c
         JOIN {EVAL_TABLE} f ON c.session_id = f.ticket_id
         WHERE c.call_direction = 'OUTBOUND_TELCO'
@@ -245,9 +245,10 @@ def fetch_campaign_analysis(campaign: str, date_range: str = "last_7_days") -> D
         l1_data[l1]["tone_counts"][tone or "neutral"] += cnt
 
     comments_by_l1: Dict[str, List] = defaultdict(list)
-    for l1, comment, ticket_id, tone, row_date in comment_rows:
+    for l1, comment, ticket_id, tone, start_time in comment_rows:
         if l1 and comment and len(comments_by_l1[l1]) < 10:
-            date_str = str(row_date) if row_date else None
+            # Store ISO date string (YYYY-MM-DD) from start_time for recording URL construction
+            date_str = str(start_time)[:10] if start_time else None
             comments_by_l1[l1].append((comment, ticket_id, tone, _detect_lang(comment), date_str))
 
     sorted_l1 = sorted(l1_data.items(), key=lambda x: x[1]["total"], reverse=True)

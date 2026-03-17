@@ -303,7 +303,7 @@ export default function CampaignDashboard({ detail }) {
       {/* Issues & Customer Voice — from eval table joined on session_id = ticket_id */}
       {detail.top_issues?.length > 0 && (
         <div style={{ marginBottom: '1.5rem' }}>
-          <IssueList issues={detail.top_issues} helpdeskType="merchant" />
+          <IssueList issues={detail.top_issues} helpdeskType="merchant" showListenButton={true} />
         </div>
       )}
 
