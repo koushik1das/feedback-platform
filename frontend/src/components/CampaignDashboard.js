@@ -247,24 +247,31 @@ export default function CampaignDashboard({ detail }) {
         ))}
       </div>
 
-      {/* Duration buckets */}
+      {/* Duration buckets — horizontal bars */}
       <div style={{ marginBottom: '1.5rem' }}>
-        <div style={{ fontSize: '.75rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: '.6rem' }}>
+        <div style={{ fontSize: '.75rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: '.75rem' }}>
           Call Duration Breakdown
         </div>
-        <div style={{ display: 'flex', gap: '.5rem', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '.45rem' }}>
           {detail.duration_buckets.map((b) => {
             const pct = detail.total_calls ? Math.round(b.count / detail.total_calls * 100) : 0;
             return (
-              <div key={b.label} style={{ flex: '1 1 80px', textAlign: 'center' }}>
-                <div style={{
-                  background: '#6366f1', borderRadius: 4,
-                  height: Math.max(4, pct * 1.2),
-                  marginBottom: '.3rem', transition: 'height .3s',
-                }} />
-                <div style={{ fontSize: '.68rem', color: '#475569', fontWeight: 600 }}>{b.label}</div>
-                <div style={{ fontSize: '.72rem', color: '#6366f1', fontWeight: 700 }}>{pct}%</div>
-                <div style={{ fontSize: '.65rem', color: '#94a3b8' }}>{fmtNum(b.count)}</div>
+              <div key={b.label} style={{ display: 'flex', alignItems: 'center', gap: '.75rem' }}>
+                <div style={{ width: 52, fontSize: '.72rem', fontWeight: 600, color: '#475569', textAlign: 'right', flexShrink: 0 }}>
+                  {b.label}
+                </div>
+                <div style={{ flex: 1, background: '#f1f5f9', borderRadius: 99, height: 10, overflow: 'hidden' }}>
+                  <div style={{
+                    height: '100%', width: `${pct}%`, minWidth: pct > 0 ? 4 : 0,
+                    background: '#6366f1', borderRadius: 99, transition: 'width .4s ease',
+                  }} />
+                </div>
+                <div style={{ width: 36, fontSize: '.72rem', fontWeight: 700, color: '#6366f1', flexShrink: 0 }}>
+                  {pct}%
+                </div>
+                <div style={{ width: 54, fontSize: '.68rem', color: '#94a3b8', flexShrink: 0 }}>
+                  {fmtNum(b.count)}
+                </div>
               </div>
             );
           })}
