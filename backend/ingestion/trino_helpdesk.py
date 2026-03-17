@@ -40,13 +40,66 @@ CST_ENTITY_MAP: Dict[str, str] = {
     "loan":                  "p4bbusinessloan",
     "payments_settlement":   "p4bpayoutandsettlement",
     "soundbox":              "p4bsoundbox",
+    "profile":               "p4bprofile",
+    "card_machine":          "p4bedc",
+    "wealth":                "p4bwealth",
 }
 
 # Map product slugs → CST entities in Trino (customer)
+# Key = UI slug (same as cst_entity), value = cst_entity in Trino
 CUSTOMER_CST_ENTITY_MAP: Dict[str, str] = {
-    "train":  "train",
-    "bus":    "bus",
-    "flight": "flight",
+    # Travel
+    "bus":                     "bus",
+    "flight":                  "flight",
+    "train":                   "train",
+    # Investments
+    "gold":                    "gold",
+    "pspl":                    "pspl",
+    # ONDC
+    "ondc-commerce":           "ondc-commerce",
+    # Personal Loan
+    "personalloan":            "personalloan",
+    # Profile
+    "paytm-profile":           "paytm-profile",
+    # UPI
+    "upi-ocl":                 "upi-ocl",
+    # Recharge & Utilities
+    "ccbp":                    "ccbp",
+    "challan":                 "challan",
+    "citybus":                 "citybus",
+    "creditcard":              "creditcard",
+    "cylinder":                "cylinder",
+    "digital-subscriptions":   "digital-subscriptions",
+    "dth":                     "dth",
+    "electricity":             "electricity",
+    "fastag":                  "fastag",
+    "gas":                     "gas",
+    "insurance":               "insurance",
+    "landline":                "landline",
+    "loan":                    "loan",
+    "metro":                   "metro",
+    "mobilepostpaid":          "mobilepostpaid",
+    "mobileprepaid":           "mobileprepaid",
+    "mortgage":                "mortgage",
+    "municipal":               "municipal",
+    "ru_education":            "ru_education",
+    "ru_insurance":            "ru_insurance",
+    "voucher":                 "voucher",
+    "water":                   "water",
+    "apartment":               "apartment",
+    "cabletv":                 "cabletv",
+    "creditline":              "creditline",
+    "datacard":                "datacard",
+    "donation":                "donation",
+    "entertainment":           "entertainment",
+    "gprc":                    "gprc",
+    "loanagainstmutualfund":   "loanagainstmutualfund",
+    "paytmdeals":              "paytmdeals",
+    "postpaid":                "postpaid",
+    "recharge":                "recharge",
+    "rent":                    "rent",
+    "retailinsurance":         "retailinsurance",
+    "toll":                    "toll",
 }
 
 # Merchant tone → numeric sentiment score
@@ -98,14 +151,32 @@ def _connect():
 
 # ── Main query ────────────────────────────────────────────────────────────────
 
-def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant", days: int = 30) -> Dict[str, Any]:
+def _resolve_date_range(max_date, date_range: str):
+    """
+    Convert a date_range slug into (since, until) strings anchored to max_date.
+    Both bounds are inclusive.
+    """
+    if date_range == "yesterday":
+        d = max_date - timedelta(days=1)
+        return d.strftime("%Y-%m-%d"), d.strftime("%Y-%m-%d")
+    if date_range == "day_before_yesterday":
+        d = max_date - timedelta(days=2)
+        return d.strftime("%Y-%m-%d"), d.strftime("%Y-%m-%d")
+    if date_range == "last_30_days":
+        return (max_date - timedelta(days=30)).strftime("%Y-%m-%d"), max_date.strftime("%Y-%m-%d")
+    # default: last_7_days
+    return (max_date - timedelta(days=7)).strftime("%Y-%m-%d"), max_date.strftime("%Y-%m-%d")
+
+
+def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
+                            date_range: str = "last_7_days") -> Dict[str, Any]:
     """
     Query Trino and return a dict that maps directly to InsightsResponse fields.
 
     Args:
         product:       product slug (e.g. "loan", "soundbox", "train", "flight")
         helpdesk_type: "merchant" or "customer"
-        days:          lookback window in days anchored to latest available data (default 30)
+        date_range:    one of last_7_days | last_30_days | yesterday | day_before_yesterday
     """
     entity_map = CUSTOMER_CST_ENTITY_MAP if helpdesk_type == "customer" else CST_ENTITY_MAP
     cst_entity = entity_map.get(product, product)
@@ -122,7 +193,9 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant", days:
     max_date = cur.fetchone()[0]
     if max_date is None:
         raise ValueError(f"No data found for entity '{cst_entity}'. The CST entity may be incorrect or have no records.")
-    since = (max_date - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    since, until = _resolve_date_range(max_date, date_range)
+    date_filter = f"dl_last_updated BETWEEN DATE '{since}' AND DATE '{until}'"
 
     # 1. Issues with tone breakdown (for avg sentiment per issue)
     cur.execute(f"""
@@ -130,7 +203,7 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant", days:
         FROM {TABLE}
         WHERE cst_entity = '{cst_entity}'
           AND task_status = 'completed'
-          AND dl_last_updated >= DATE '{since}'
+          AND {date_filter}
           AND out_key_problem_desc IS NOT NULL
           AND out_key_problem_desc NOT IN ('Others', 'NA', 'None', '')
         GROUP BY out_key_problem_desc, out_merchant_tone
@@ -143,7 +216,7 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant", days:
         FROM {TABLE}
         WHERE cst_entity = '{cst_entity}'
           AND task_status = 'completed'
-          AND dl_last_updated >= DATE '{since}'
+          AND {date_filter}
     """)
     total = cur.fetchone()[0] or 0
 
@@ -153,7 +226,7 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant", days:
         FROM {TABLE}
         WHERE cst_entity = '{cst_entity}'
           AND task_status = 'completed'
-          AND dl_last_updated >= DATE '{since}'
+          AND {date_filter}
         GROUP BY out_merchant_tone
     """)
     tone_rows = cur.fetchall()
@@ -166,21 +239,21 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant", days:
         FROM {TABLE}
         WHERE cst_entity = '{cst_entity}'
           AND task_status = 'completed'
-          AND dl_last_updated >= DATE '{since}'
+          AND {date_filter}
     """)
     threat_row = cur.fetchone()
     threat_total = threat_row[0] or 0
     threat_count = threat_row[1] or 0
     threat_pct = round(threat_count / threat_total * 100, 2) if threat_total > 0 else 0.0
 
-    # 4. Sample comments per issue with ticket_id, tone, language
+    # 4. Sample comments per issue with ticket_id, tone, language, date
     cur.execute(f"""
         SELECT out_key_problem_desc, out_key_problem_sub_desc, ticket_id,
-               out_merchant_tone
+               out_merchant_tone, dl_last_updated
         FROM {TABLE}
         WHERE cst_entity = '{cst_entity}'
           AND task_status = 'completed'
-          AND dl_last_updated >= DATE '{since}'
+          AND {date_filter}
           AND out_key_problem_desc IS NOT NULL
           AND out_key_problem_desc NOT IN ('Others', 'NA', 'None', '')
           AND out_key_problem_sub_desc IS NOT NULL
@@ -198,11 +271,12 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant", days:
         l1_data[l1]["total"] += cnt
         l1_data[l1]["tone_counts"][tone or "neutral"] += cnt
 
-    # Pool sample comments per L1 — store (text, ticket_id, tone, lang) tuples
+    # Pool sample comments per L1 — store (text, ticket_id, tone, lang, date) tuples
     comments_by_l1: Dict[str, List[tuple]] = defaultdict(list)
-    for l1, comment, ticket_id, tone in comment_rows:
+    for l1, comment, ticket_id, tone, row_date in comment_rows:
         if l1 and comment and len(comments_by_l1[l1]) < 10:
-            comments_by_l1[l1].append((comment, ticket_id, tone, _detect_lang(comment)))
+            date_str = str(row_date) if row_date else None
+            comments_by_l1[l1].append((comment, ticket_id, tone, _detect_lang(comment), date_str))
 
     sorted_l1 = sorted(l1_data.items(), key=lambda x: x[1]["total"], reverse=True)
 
@@ -223,6 +297,8 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant", days:
             "comment_ticket_ids": [c[1] for c in issue_comments],
             "comment_tones":      [c[2] for c in issue_comments],
             "comment_langs":      [c[3] for c in issue_comments],
+            "comment_dates":      [c[4] for c in issue_comments],
+            "comment_ratings":    [None  for c in issue_comments],
             "channels":           {"helpdesk": l1_total},
         })
 
@@ -244,9 +320,10 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant", days:
     top_pct     = top_issues[0]["percentage"] if top_issues else 0
     neg_pct     = round(negative / total * 100, 1) if total else 0
     user_label  = "customers" if helpdesk_type == "customer" else "merchants"
+    date_label  = since if since == until else f"{since} → {until}"
     ai_summary = (
         f"Analysed {total:,} helpdesk interactions for {cst_entity} "
-        f"({since} → {max_date}). "
+        f"({date_label}). "
         f"Top complaint: '{top_label}' ({top_pct}% of tickets). "
         f"{neg_pct}% of {user_label} expressed frustration. "
         f"Top trending issues: {', '.join(i['label'] for i in top_issues[:3])}."

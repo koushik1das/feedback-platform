@@ -59,9 +59,11 @@ class IssueStats(BaseModel):
     avg_sentiment:      float
     sentiment_label:    SentimentLabel
     example_comments:   List[str]
-    comment_ticket_ids: Optional[List[Optional[str]]] = None  # parallel — ticket IDs
-    comment_tones:      Optional[List[Optional[str]]] = None  # parallel — merchant tones
-    comment_langs:      Optional[List[Optional[str]]] = None  # parallel — language codes
+    comment_ticket_ids: Optional[List[Optional[str]]]   = None  # parallel — ticket IDs
+    comment_tones:      Optional[List[Optional[str]]]   = None  # parallel — merchant tones
+    comment_langs:      Optional[List[Optional[str]]]   = None  # parallel — language codes
+    comment_dates:      Optional[List[Optional[str]]]   = None  # parallel — feedback dates
+    comment_ratings:    Optional[List[Optional[float]]] = None  # parallel — star ratings
     channels:           Dict[str, int]   # breakdown by channel
 
 
@@ -92,19 +94,32 @@ class InsightsResponse(BaseModel):
     trending_issues:            List[str]
     ai_summary:                 str
     generated_at:               datetime
-    social_media_threat_count:  Optional[int]  = None
+    social_media_threat_count:  Optional[int]   = None
     social_media_threat_pct:    Optional[float] = None
+    avg_rating:                 Optional[float] = None   # avg star rating (app store only)
+    # App Store pagination
+    session_id:                 Optional[str]  = None
+    total_reviews_loaded:       Optional[int]  = None
+    has_more:                   Optional[bool] = None
 
 
 # ── Request / Response models for the API ────────────────────────────────────
 
 class AnalyseRequest(BaseModel):
-    channels: List[ChannelType]
+    channels:    List[ChannelType]
+    app_package: Optional[str] = None   # Google Play package to scrape
 
 
 class HelpdeskType(str, Enum):
     MERCHANT = "merchant"
     CUSTOMER = "customer"
+
+
+class DateRange(str, Enum):
+    YESTERDAY            = "yesterday"
+    DAY_BEFORE_YESTERDAY = "day_before_yesterday"
+    LAST_7_DAYS          = "last_7_days"
+    LAST_30_DAYS         = "last_30_days"
 
 
 class HelpdeskProduct(str, Enum):
@@ -121,7 +136,8 @@ class CustomerProduct(str, Enum):
 
 class HelpdeskAnalyseRequest(BaseModel):
     helpdesk_type: HelpdeskType
-    product:       str  # HelpdeskProduct for merchant, CustomerProduct for customer
+    product:       str       # HelpdeskProduct for merchant, CustomerProduct for customer
+    date_range:    DateRange = DateRange.LAST_7_DAYS
 
 
 class ChannelInfo(BaseModel):

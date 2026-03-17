@@ -21,25 +21,29 @@ from models import (
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _pick_examples(items: List[CategorisedFeedback], n: int = 3) -> List[str]:
+def _pick_examples(items: List[CategorisedFeedback], n: int = 3):
     """
     Choose up to N representative negative/neutral example comments.
-    Prefers shorter, distinct comments.
+    Returns parallel lists: (texts, dates, ratings).
     """
     candidates = sorted(
         items,
         key=lambda x: (x.sentiment.score, -len(x.feedback.customer_text)),
     )
     seen: set[str] = set()
-    examples: List[str] = []
+    texts:   List[str]            = []
+    dates:   List[Optional[str]]  = []
+    ratings: List[Optional[float]] = []
     for c in candidates:
         text = c.feedback.customer_text[:200]
         if text not in seen:
             seen.add(text)
-            examples.append(text)
-        if len(examples) >= n:
+            texts.append(text)
+            dates.append(c.feedback.timestamp.strftime("%Y-%m-%d") if c.feedback.timestamp else None)
+            ratings.append(c.feedback.rating)
+        if len(texts) >= n:
             break
-    return examples
+    return texts, dates, ratings
 
 
 def _sentiment_label_for_score(avg_score: float) -> SentimentLabel:
@@ -161,13 +165,16 @@ def generate_insights(
         for item in items:
             channel_breakdown[item.feedback.channel.value] += 1
 
+        ex_texts, ex_dates, ex_ratings = _pick_examples(items, n=10)
         issue_stats.append(IssueStats(
             label=label,
             count=count,
             percentage=percentage,
             avg_sentiment=avg_score,
             sentiment_label=sent_label,
-            example_comments=_pick_examples(items),
+            example_comments=ex_texts,
+            comment_dates=ex_dates,
+            comment_ratings=ex_ratings,
             channels=dict(channel_breakdown),
         ))
 
@@ -181,6 +188,10 @@ def generate_insights(
         if iss.count >= avg_count and iss.avg_sentiment < -0.1
     ][:3]
 
+    # ── Average rating (where ratings exist) ─────────────────────────────────
+    rated = [c.feedback.rating for c in categorised if c.feedback.rating is not None]
+    avg_rating = round(sum(rated) / len(rated), 2) if rated else None
+
     # ── AI Summary ────────────────────────────────────────────────────────────
     summary = _generate_ai_summary(issue_stats, total, channels)
 
@@ -191,5 +202,6 @@ def generate_insights(
         sentiment_distribution=sentiment_dist,
         trending_issues=trending,
         ai_summary=summary,
+        avg_rating=avg_rating,
         generated_at=datetime.utcnow(),
     )

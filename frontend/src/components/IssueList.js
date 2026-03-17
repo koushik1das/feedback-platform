@@ -14,7 +14,8 @@ const COLORS = [
 
 const RANK_BG = ['#fef9c3', '#f1f5f9', '#fef2f2'];
 
-const INITIAL_COMMENTS = 3;
+const INITIAL_COMMENTS = 5;
+const INITIAL_ISSUES   = 5;
 
 const LANG_LABELS = { hi:'HI', en:'EN', mr:'MR', ta:'TA', te:'TE', kn:'KN', bn:'BN', gu:'GU', pa:'PA', ml:'ML' };
 
@@ -31,6 +32,7 @@ const TONE_META = {
 export default function IssueList({ issues, helpdeskType = 'merchant' }) {
   const [expanded,       setExpanded]       = useState(null);
   const [showAllMap,     setShowAllMap]     = useState({});      // label → bool
+  const [showAllIssues,  setShowAllIssues]  = useState(true);
   const [transcriptId,   setTranscriptId]   = useState(null);   // ticket_id being viewed
 
   const toggleShowAll = useCallback((label, e) => {
@@ -54,13 +56,15 @@ export default function IssueList({ issues, helpdeskType = 'merchant' }) {
         </div>
 
         <div style={{ overflowY: 'auto', flex: 1 }}>
-          {issues.map((iss, idx) => {
+          {(showAllIssues ? issues : issues.slice(0, INITIAL_ISSUES)).map((iss, idx) => {
             const isOpen = expanded === iss.label;
             const color  = COLORS[idx % COLORS.length];
             const rankBg = RANK_BG[idx] || '#f8fafc';
             const ticketIds = iss.comment_ticket_ids || [];
             const tones     = iss.comment_tones      || [];
             const langs     = iss.comment_langs      || [];
+            const dates     = iss.comment_dates      || [];
+            const ratings   = iss.comment_ratings    || [];
 
             return (
               <div
@@ -131,11 +135,13 @@ export default function IssueList({ issues, helpdeskType = 'merchant' }) {
                           ? iss.example_comments
                           : iss.example_comments.slice(0, INITIAL_COMMENTS)
                         ).map((comment, i) => {
-                          const ticketId = ticketIds[i] || null;
-                          const tone     = (tones[i] || '').toLowerCase();
-                          const lang     = (langs[i] || '').toLowerCase();
-                          const toneMeta = TONE_META[tone] || null;
+                          const ticketId  = ticketIds[i] || null;
+                          const tone      = (tones[i] || '').toLowerCase();
+                          const lang      = (langs[i] || '').toLowerCase();
+                          const toneMeta  = TONE_META[tone] || null;
                           const langLabel = LANG_LABELS[lang] || (lang ? lang.toUpperCase() : null);
+                          const dateStr   = dates[i] || null;
+                          const rating    = ratings[i] != null ? ratings[i] : null;
 
                           return (
                             <div key={i} style={{ marginBottom: '.75rem' }}>
@@ -165,6 +171,29 @@ export default function IssueList({ issues, helpdeskType = 'merchant' }) {
                                     letterSpacing: '.04em',
                                   }}>
                                     {langLabel}
+                                  </span>
+                                )}
+
+                                {/* Date tag */}
+                                {dateStr && (
+                                  <span style={{
+                                    fontSize: '.68rem', fontWeight: 500,
+                                    background: '#f1f5f9', color: '#64748b',
+                                    borderRadius: 4, padding: '2px 7px',
+                                  }}>
+                                    📅 {dateStr}
+                                  </span>
+                                )}
+
+                                {/* Rating tag */}
+                                {rating != null && (
+                                  <span style={{
+                                    fontSize: '.68rem', fontWeight: 700,
+                                    background: rating >= 4 ? '#d1fae5' : rating <= 2 ? '#fee2e2' : '#fef9c3',
+                                    color:      rating >= 4 ? '#065f46' : rating <= 2 ? '#dc2626' : '#ca8a04',
+                                    borderRadius: 4, padding: '2px 7px',
+                                  }}>
+                                    {'★'.repeat(Math.round(rating))} {rating}/5
                                   </span>
                                 )}
 

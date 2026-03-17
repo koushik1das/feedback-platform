@@ -10,3 +10,5 @@ pytest-asyncio==0.23.7
 requests==2.32.3
 trino==0.329.0              # direct Trino DB connection
 pandas==2.2.2               # DataFrame for Trino result handling
+google-play-scraper==1.2.7  # live Google Play reviews
+boto3

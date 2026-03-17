@@ -9,34 +9,62 @@
 import React, { useState, useCallback } from 'react';
 import axios from 'axios';
 
-import ChannelSelector from './components/ChannelSelector';
-import TopIssues        from './components/TopIssues';
-import EscalationStats  from './components/EscalationStats';
-import IssueList        from './components/IssueList';
-import FeedbackTable   from './components/FeedbackTable';
+import ChannelSelector    from './components/ChannelSelector';
+import TopIssues          from './components/TopIssues';
+import EscalationStats    from './components/EscalationStats';
+import IssueList          from './components/IssueList';
+import FeedbackTable      from './components/FeedbackTable';
+import CampaignDashboard  from './components/CampaignDashboard';
 
 const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
 
+const APP_LABELS = {
+  'net.one97.paytm':    'Paytm',
+  'com.paytm.business': 'Paytm for Business',
+  'com.phonepe.app':    'PhonePe',
+};
+
 export default function App() {
   const [selectedChannel,  setSelectedChannel]  = useState(null);
-  const [helpdeskType,     setHelpdeskType]     = useState(null);  // 'merchant' | 'customer'
+  const [appStoreApp,      setAppStoreApp]      = useState(null);
+  const [helpdeskType,     setHelpdeskType]     = useState(null);
+  const [helpdeskCategory, setHelpdeskCategory] = useState(null);
   const [helpdeskProduct,  setHelpdeskProduct]  = useState(null);
+  const [dateRange,        setDateRange]        = useState('last_7_days');
   const [insights,         setInsights]         = useState(null);
   const [rawFeedback,      setRawFeedback]      = useState([]);
   const [loading,          setLoading]          = useState(false);
+  const [loadingMore,      setLoadingMore]      = useState(false);
   const [error,            setError]            = useState(null);
+  const [sessionId,        setSessionId]        = useState(null);
+  const [hasMore,          setHasMore]          = useState(false);
+  const [totalLoaded,      setTotalLoaded]      = useState(0);
 
   const handleSelectChannel = useCallback((id) => {
     setSelectedChannel(id);
+    setAppStoreApp(null);
     setHelpdeskType(null);
+    setHelpdeskCategory(null);
+    setHelpdeskProduct(null);
+    setInsights(null);
+    setRawFeedback([]);
+    setError(null);
+    setSessionId(null);
+    setHasMore(false);
+    setTotalLoaded(0);
+  }, []);
+
+  const handleSelectHelpdeskType = useCallback((type) => {
+    setHelpdeskType(type);
+    setHelpdeskCategory(null);
     setHelpdeskProduct(null);
     setInsights(null);
     setRawFeedback([]);
     setError(null);
   }, []);
 
-  const handleSelectHelpdeskType = useCallback((type) => {
-    setHelpdeskType(type);
+  const handleSelectHelpdeskCategory = useCallback((category) => {
+    setHelpdeskCategory(category);
     setHelpdeskProduct(null);
     setInsights(null);
     setRawFeedback([]);
@@ -57,26 +85,46 @@ export default function App() {
     setRawFeedback([]);
 
     try {
-      if (selectedChannel === 'helpdesk') {
+      if (selectedChannel === 'campaigns') {
+        // CampaignDashboard fetches its own data — nothing to do here
+        return;
+      } else if (selectedChannel === 'helpdesk') {
         // ── Helpdesk → Trino ──────────────────────────────────────────────
         const res = await axios.post(`${API_BASE}/helpdesk/analyse`, {
           helpdesk_type: helpdeskType,
           product:       helpdeskProduct,
+          date_range:    dateRange,
         });
         setInsights(res.data);
+        // Build raw rows from example comments across all issue clusters
+        const rows = [];
+        (res.data.top_issues || []).forEach((iss) => {
+          (iss.example_comments || []).forEach((text, i) => {
+            rows.push({
+              id:            `${iss.label}-${i}`,
+              source:        'helpdesk_zendesk',
+              channel:       'helpdesk',
+              timestamp:     new Date().toISOString(),
+              customer_text: text,
+              rating:        null,
+              issue_label:   iss.label,
+            });
+          });
+        });
+        setRawFeedback(rows);
 
       } else if (selectedChannel === 'app_store') {
-        // ── App Store → Google Play MCP (TODO) ───────────────────────────
-        // Placeholder: falls back to mock analyse endpoint until MCP is wired
-        const [insightsRes, feedbackRes] = await Promise.all([
-          axios.post(`${API_BASE}/analyse`, { channels: ['app_store'] }),
-          axios.get(`${API_BASE}/feedback`, {
-            params: { channels: ['app_store'], limit: 200 },
-            paramsSerializer: { indexes: null },
-          }),
-        ]);
-        setInsights(insightsRes.data);
-        setRawFeedback(feedbackRes.data);
+        const res = await axios.post(`${API_BASE}/analyse`, {
+          channels:    ['app_store'],
+          app_package: appStoreApp || undefined,
+        });
+        setInsights(res.data);
+        setSessionId(res.data.session_id || null);
+        setHasMore(res.data.has_more || false);
+        setTotalLoaded(res.data.total_reviews_loaded || 0);
+        // Fetch raw reviews for the table
+        const rawRes = await axios.get(`${API_BASE}/feedback?channels=app_store&limit=500`);
+        setRawFeedback(rawRes.data);
       }
     } catch (e) {
       setError(
@@ -86,7 +134,25 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [selectedChannel, helpdeskType, helpdeskProduct]);
+  }, [selectedChannel, appStoreApp, helpdeskType, helpdeskProduct, dateRange]);
+
+  const handleLoadMore = useCallback(async () => {
+    if (!sessionId) return;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const res = await axios.post(
+        `${API_BASE}/app-store/load-more?session_id=${sessionId}&count=200`
+      );
+      setInsights(res.data);
+      setHasMore(res.data.has_more || false);
+      setTotalLoaded(res.data.total_reviews_loaded || 0);
+    } catch (e) {
+      setError(e.response?.data?.detail || 'Failed to load more reviews.');
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [sessionId]);
 
   return (
     <div className="app-wrapper">
@@ -119,11 +185,22 @@ export default function App() {
         {/* ── Channel selector ── */}
         <ChannelSelector
           selectedChannel={selectedChannel}
+          appStoreApp={appStoreApp}
           helpdeskType={helpdeskType}
+          helpdeskCategory={helpdeskCategory}
           helpdeskProduct={helpdeskProduct}
+          dateRange={dateRange}
           onSelectChannel={handleSelectChannel}
+          onSelectAppStoreApp={(id) => {
+            setAppStoreApp(id);
+            setInsights(null);
+            setRawFeedback([]);
+            setError(null);
+          }}
           onSelectHelpdeskType={handleSelectHelpdeskType}
+          onSelectHelpdeskCategory={handleSelectHelpdeskCategory}
           onSelectProduct={handleSelectProduct}
+          onSelectDateRange={setDateRange}
           onAnalyse={handleAnalyse}
           loading={loading}
         />
@@ -143,40 +220,39 @@ export default function App() {
           </div>
         )}
 
+        {/* ── Campaigns view ── */}
+        {selectedChannel === 'campaigns' && !loading && (
+          <CampaignDashboard />
+        )}
+
         {/* ── Results ── */}
-        {insights && !loading && (
+        {insights && !loading && selectedChannel !== 'campaigns' && (
           <>
             {/* Summary stats */}
             <div className="stats-row">
               <div className="stat-card">
-                <div className="stat-label">Sessions</div>
+                <div className="stat-label"># of Feedbacks</div>
                 <div className="stat-value stat-primary">{insights.total_feedback.toLocaleString()}</div>
-                <div className="stat-sub">{insights.channels_analysed.join(', ')}</div>
-              </div>
-              <div className="stat-card">
-                <div className="stat-label">Social Media Threat</div>
-                <div className="stat-value stat-negative">
-                  {(insights.social_media_threat_pct ?? 0).toFixed(2)}%
+                <div className="stat-sub">
+                  {appStoreApp ? APP_LABELS[appStoreApp] || appStoreApp : insights.channels_analysed.join(', ')}
                 </div>
-                <div className="stat-sub">{(insights.social_media_threat_count ?? 0).toLocaleString()} threat mentions</div>
               </div>
-              <div className="stat-card">
-                <div className="stat-label">Issue Categories</div>
-                <div className="stat-value stat-primary">{insights.top_issues.length}</div>
-                <div className="stat-sub">distinct complaint clusters</div>
-              </div>
+              {insights.avg_rating != null && (
+                <div className="stat-card">
+                  <div className="stat-label">Overall App Rating</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '.4rem', margin: '.25rem 0' }}>
+                    <span style={{ fontSize: '1.25rem', letterSpacing: '1px', color: insights.avg_rating >= 4 ? '#10b981' : insights.avg_rating >= 3 ? '#f59e0b' : '#ef4444' }}>
+                      {'★'.repeat(Math.round(insights.avg_rating))}{'☆'.repeat(5 - Math.round(insights.avg_rating))}
+                    </span>
+                    <span style={{ fontSize: '1.5rem', fontWeight: 700, color: insights.avg_rating >= 4 ? '#10b981' : insights.avg_rating >= 3 ? '#f59e0b' : '#ef4444' }}>
+                      {insights.avg_rating.toFixed(1)}
+                    </span>
+                  </div>
+                  <div className="stat-sub">out of 5 stars</div>
+                </div>
+              )}
             </div>
 
-            {/* AI Summary */}
-            {insights.ai_summary && (
-              <div className="ai-banner">
-                <div className="ai-banner-icon">🤖</div>
-                <div>
-                  <div className="ai-banner-label">AI Executive Summary</div>
-                  <div className="ai-banner-text">{insights.ai_summary}</div>
-                </div>
-              </div>
-            )}
 
             {/* Trending issues */}
             {insights.trending_issues?.length > 0 && (
@@ -193,7 +269,8 @@ export default function App() {
             {/* Issue list */}
             <IssueList issues={insights.top_issues} helpdeskType={helpdeskType} />
 
-            {/* Raw feed table — only shown for App Store (Helpdesk uses Trino, no raw items) */}
+
+            {/* Raw feed table */}
             {rawFeedback.length > 0 && <FeedbackTable items={rawFeedback} />}
           </>
         )}

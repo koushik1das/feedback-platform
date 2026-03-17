@@ -37,6 +37,7 @@ export default function FeedbackTable({ items }) {
   const [page, setPage] = useState(0);
   if (!items?.length) return null;
 
+  const hasIssueCol = items.some((r) => r.issue_label);
   const totalPages = Math.ceil(items.length / PAGE_SIZE);
   const pageItems = items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
@@ -59,6 +60,7 @@ export default function FeedbackTable({ items }) {
               <th>Source</th>
               <th>Channel</th>
               <th>Date</th>
+              {hasIssueCol && <th>Issue Cluster</th>}
               <th>Customer Feedback</th>
               <th>Rating</th>
             </tr>
@@ -87,6 +89,19 @@ export default function FeedbackTable({ items }) {
                 <td style={{ color: '#64748b', whiteSpace: 'nowrap', fontSize: '.8rem' }}>
                   {formatDate(item.timestamp)}
                 </td>
+                {hasIssueCol && (
+                  <td>
+                    {item.issue_label ? (
+                      <span style={{
+                        background: '#e0e7ff', color: '#4338ca',
+                        borderRadius: 4, padding: '2px 8px',
+                        fontSize: '.72rem', fontWeight: 600, whiteSpace: 'nowrap',
+                      }}>
+                        {item.issue_label}
+                      </span>
+                    ) : <span style={{ color: '#cbd5e1' }}>—</span>}
+                  </td>
+                )}
                 <td>
                   <div className="text-truncate" title={item.customer_text}>
                     {item.customer_text}
