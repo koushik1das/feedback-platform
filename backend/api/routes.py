@@ -23,7 +23,7 @@ from models import (
 from ingestion.aggregator import aggregate_feedback, get_channel_sample_counts
 from analysis.clustering import categorise_feedback
 from analysis.insights import generate_insights
-from ingestion.trino_helpdesk import fetch_helpdesk_insights, fetch_transcript, fetch_master_data, fetch_eval
+from ingestion.trino_helpdesk import fetch_helpdesk_insights, fetch_transcript, fetch_master_data, fetch_eval, fetch_function_calls
 from ingestion.trino_campaigns import fetch_campaign_list, fetch_campaign_analysis
 from models import TranscriptMessage, MasterDataResponse, EvalResponse
 
@@ -202,6 +202,15 @@ def get_transcript(ticket_id: str, helpdesk_type: HelpdeskType = HelpdeskType.ME
         return fetch_transcript(ticket_id, helpdesk_type.value)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Transcript fetch failed: {str(e)}")
+
+
+@router.get("/helpdesk/function-calls/{ticket_id}", tags=["helpdesk"])
+def get_function_calls(ticket_id: str, helpdesk_type: HelpdeskType = HelpdeskType.MERCHANT):
+    """Fetch function call outputs and full transcript rows for a given ticket/session ID."""
+    try:
+        return fetch_function_calls(ticket_id, helpdesk_type.value)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Function calls fetch failed: {str(e)}")
 
 
 @router.get("/helpdesk/eval/{ticket_id}", response_model=EvalResponse, tags=["helpdesk"])

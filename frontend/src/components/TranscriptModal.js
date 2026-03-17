@@ -353,22 +353,145 @@ function EvalSection({ evalData, loading, error }) {
   );
 }
 
+function FunctionCallsSection({ calls, loading, error }) {
+  const [openIdx, setOpenIdx] = useState(null);
+
+  if (loading) return (
+    <div style={{ display:'flex', justifyContent:'center', padding:'1.5rem', gap:'.5rem', color:'#94a3b8' }}>
+      <Spinner size={18} /><span style={{ fontSize:'.82rem' }}>Loading function calls…</span>
+    </div>
+  );
+  if (error) return (
+    <div style={{ margin:'1rem', background:'#fef9c3', border:'1px solid #fde68a',
+      borderRadius:8, padding:'.75rem', color:'#92400e', fontSize:'.82rem' }}>
+      {error}
+    </div>
+  );
+  if (!calls?.length) return (
+    <div style={{ padding:'1rem', fontSize:'.8rem', color:'#94a3b8', fontStyle:'italic' }}>
+      No function calls found for this session.
+    </div>
+  );
+
+  // Separate TRANSCRIPT rows from function call rows
+  const transcriptRows = calls.filter(c => c.type === 'TRANSCRIPT');
+  const fcRows         = calls.filter(c => c.type !== 'TRANSCRIPT');
+
+  return (
+    <div>
+      {/* ── IVR Call Transcript ── */}
+      {transcriptRows.length > 0 && (
+        <div style={{ borderBottom:'1px solid #f1f5f9' }}>
+          <div style={{ padding:'.5rem .75rem', background:'#f0fdf4',
+            fontSize:'.72rem', fontWeight:700, textTransform:'uppercase',
+            letterSpacing:'.06em', color:'#15803d', borderBottom:'1px solid #bbf7d0' }}>
+            📝 IVR Call Transcript
+          </div>
+          {transcriptRows.map((c, i) => {
+            const text = typeof c.data === 'string' ? c.data
+              : typeof c.data === 'object' ? JSON.stringify(c.data, null, 2) : String(c.data);
+            return (
+              <div key={c.message_id || i} style={{ padding:'.75rem 1rem' }}>
+                <pre style={{
+                  margin:0, whiteSpace:'pre-wrap', wordBreak:'break-word',
+                  fontSize:'.78rem', color:'#334155', lineHeight:1.6,
+                  background:'#f8fafc', border:'1px solid #e2e8f0',
+                  borderRadius:8, padding:'.75rem',
+                }}>
+                  {text}
+                </pre>
+                <div style={{ fontSize:'.65rem', color:'#94a3b8', marginTop:'.3rem' }}>
+                  {c.created_at?.slice(0, 19)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Function Call Outputs ── */}
+      {fcRows.length > 0 && (
+        <div>
+          <div style={{ padding:'.5rem .75rem', background:'#eff6ff',
+            fontSize:'.72rem', fontWeight:700, textTransform:'uppercase',
+            letterSpacing:'.06em', color:'#1d4ed8', borderBottom:'1px solid #bfdbfe',
+            borderTop: transcriptRows.length ? '1px solid #f1f5f9' : 'none' }}>
+            ⚙️ Function Calls ({fcRows.length})
+          </div>
+          {fcRows.map((c, i) => {
+            const isOpen = openIdx === i;
+            // Extract a readable name from the data
+            let fnName = c.type;
+            let payload = c.data;
+            if (payload && typeof payload === 'object') {
+              fnName = payload.function_name || payload.name || payload.tool || c.type;
+            }
+            return (
+              <div key={c.message_id || i} style={{ borderBottom:'1px solid #f1f5f9' }}>
+                <button
+                  onClick={() => setOpenIdx(isOpen ? null : i)}
+                  style={{
+                    width:'100%', background:'none', border:'none', cursor:'pointer',
+                    display:'flex', alignItems:'center', gap:'.6rem',
+                    padding:'.6rem .75rem', textAlign:'left',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background='#f8fafc'}
+                  onMouseLeave={e => e.currentTarget.style.background='none'}
+                >
+                  <span style={{
+                    fontSize:'.68rem', fontWeight:700, background:'#dbeafe',
+                    color:'#1e40af', borderRadius:4, padding:'2px 8px', flexShrink:0,
+                    fontFamily:'monospace',
+                  }}>
+                    {fnName}
+                  </span>
+                  <span style={{ fontSize:'.7rem', color:'#94a3b8', flex:1 }}>
+                    {c.created_at?.slice(0, 19)}
+                  </span>
+                  <span style={{ fontSize:'.72rem', color:'#94a3b8',
+                    transform: isOpen ? 'rotate(180deg)' : 'none', transition:'transform .2s' }}>
+                    ▾
+                  </span>
+                </button>
+                {isOpen && (
+                  <div style={{ padding:'.25rem .75rem .75rem 2rem' }}>
+                    <pre style={{
+                      margin:0, whiteSpace:'pre-wrap', wordBreak:'break-word',
+                      fontSize:'.74rem', color:'#1e3a5f', lineHeight:1.55,
+                      background:'#eff6ff', border:'1px solid #bfdbfe',
+                      borderRadius:8, padding:'.65rem .8rem',
+                    }}>
+                      {typeof payload === 'string' ? payload : JSON.stringify(payload, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', onClose }) {
-  const [messages,   setMessages]   = useState([]);
-  const [masterData, setMasterData] = useState(null);
-  const [evalData,   setEvalData]   = useState(null);
-  const [txLoading,  setTxLoading]  = useState(true);
-  const [mdLoading,  setMdLoading]  = useState(true);
-  const [evalLoading,setEvalLoading]= useState(true);
-  const [txError,    setTxError]    = useState(null);
-  const [mdError,    setMdError]    = useState(null);
-  const [evalError,  setEvalError]  = useState(null);
+  const [messages,    setMessages]    = useState([]);
+  const [masterData,  setMasterData]  = useState(null);
+  const [evalData,    setEvalData]    = useState(null);
+  const [fnCalls,     setFnCalls]     = useState([]);
+  const [txLoading,   setTxLoading]   = useState(true);
+  const [mdLoading,   setMdLoading]   = useState(true);
+  const [evalLoading, setEvalLoading] = useState(true);
+  const [fnLoading,   setFnLoading]   = useState(true);
+  const [txError,     setTxError]     = useState(null);
+  const [mdError,     setMdError]     = useState(null);
+  const [evalError,   setEvalError]   = useState(null);
+  const [fnError,     setFnError]     = useState(null);
   const bodyRef = useRef(null);
 
   useEffect(() => {
-    // Fetch transcript + master data + eval in parallel
-    setTxLoading(true); setMdLoading(true); setEvalLoading(true);
-    setTxError(null);   setMdError(null);   setEvalError(null);
+    setTxLoading(true); setMdLoading(true); setEvalLoading(true); setFnLoading(true);
+    setTxError(null);   setMdError(null);   setEvalError(null);   setFnError(null);
 
     const params = `?helpdesk_type=${helpdeskType}`;
 
@@ -389,6 +512,11 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', o
       .then(res => setEvalData(res.data))
       .catch(e => setEvalError(e.response?.data?.detail || 'No eval data found.'))
       .finally(() => setEvalLoading(false));
+
+    axios.get(`${API_BASE}/helpdesk/function-calls/${ticketId}${params}`)
+      .then(res => setFnCalls(res.data))
+      .catch(e => setFnError(e.response?.data?.detail || 'No function call data found.'))
+      .finally(() => setFnLoading(false));
   }, [ticketId]);
 
   const visible = messages.filter(m => !m.hidden);
@@ -572,6 +700,21 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', o
             <div style={{ flex:1, overflowY:'auto' }}>
               {/* Eval card */}
               <EvalSection evalData={evalData} loading={evalLoading} error={evalError} />
+
+              {/* Function Calls header */}
+              <div style={{ padding:'.6rem 1rem', borderBottom:'1px solid #f1f5f9',
+                background:'#f8fafc', flexShrink:0 }}>
+                <span style={{ fontSize:'.78rem', fontWeight:700, color:'#64748b',
+                  textTransform:'uppercase', letterSpacing:'.06em' }}>
+                  ⚙️ Function Calls &amp; Transcript
+                </span>
+                {!fnLoading && fnCalls.length > 0 && (
+                  <span style={{ fontSize:'.72rem', color:'#94a3b8', marginLeft:'.5rem' }}>
+                    {fnCalls.length} rows
+                  </span>
+                )}
+              </div>
+              <FunctionCallsSection calls={fnCalls} loading={fnLoading} error={fnError} />
 
               {/* Master data header */}
               <div style={{ padding:'.6rem 1rem', borderBottom:'1px solid #f1f5f9',

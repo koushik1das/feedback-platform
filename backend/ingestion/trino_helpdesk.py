@@ -433,6 +433,54 @@ def fetch_transcript(ticket_id: str, helpdesk_type: str = "merchant") -> List[Di
     return messages
 
 
+# ── Function calls fetch ───────────────────────────────────────────────────────
+
+def fetch_function_calls(ticket_id: str, helpdesk_type: str = "merchant") -> List[Dict[str, Any]]:
+    """
+    Fetch all function-call and full-transcript rows for a given ticket_id.
+    These are excluded from the normal chat transcript but contain rich
+    API call data and the IVR call transcript text.
+    """
+    schema = DB_SCHEMA.get(helpdesk_type, "mhd_crm_cst")
+    conv_table = CONV_TABLE_TMPL.format(schema=schema)
+    conn = _connect()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+        SELECT message_id, type, content, created_at
+        FROM {conv_table}
+        WHERE ticket_id = '{ticket_id}'
+          AND dl_last_updated >= DATE '2025-01-01'
+          AND type IN ('function_call_output', 'function_call', 'TRANSCRIPT')
+        ORDER BY created_at
+    """)
+
+    calls = []
+    for message_id, msg_type, content_str, created_at in cur.fetchall():
+        raw = content_str or ""
+        data: Any = raw
+        try:
+            parsed = _json.loads(raw)
+            # Some function_call rows are double-encoded strings
+            if isinstance(parsed, str):
+                try:
+                    parsed = _json.loads(parsed)
+                except Exception:
+                    pass
+            data = parsed
+        except Exception:
+            pass
+
+        calls.append({
+            "message_id": message_id,
+            "type":       msg_type,
+            "data":       data,
+            "created_at": created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+        })
+
+    return calls
+
+
 # ── Master data fetch ──────────────────────────────────────────────────────────
 
 ANALYTICS_TABLE_TMPL = "hive.{schema}.vertical_analytics_data_snapshot_v3"
