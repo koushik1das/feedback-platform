@@ -271,34 +271,6 @@ export default function CampaignDashboard({ detail }) {
         </div>
       </div>
 
-      {/* Daily trend */}
-      {detail.daily_trend?.length > 1 && (
-        <div style={{ marginBottom: '1.5rem' }}>
-          <div style={{ fontSize: '.75rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: '.6rem' }}>
-            Daily Call Volume
-          </div>
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '.82rem' }}>
-              <thead>
-                <tr style={{ borderBottom: '2px solid #f1f5f9' }}>
-                  {['Date', 'Calls', 'Avg Duration'].map(h => (
-                    <th key={h} style={{ textAlign: 'left', padding: '.4rem .6rem', color: '#64748b', fontWeight: 600 }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {detail.daily_trend.map((d) => (
-                  <tr key={d.date} style={{ borderBottom: '1px solid #f8fafc' }}>
-                    <td style={{ padding: '.4rem .6rem', color: '#334155' }}>{d.date}</td>
-                    <td style={{ padding: '.4rem .6rem', fontWeight: 600, color: '#6366f1' }}>{fmtNum(d.calls)}</td>
-                    <td style={{ padding: '.4rem .6rem', color: '#475569' }}>{fmtDur(d.avg_duration)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
 
       {/* Issues & Customer Voice — from eval table joined on session_id = ticket_id */}
       {detail.top_issues?.length > 0 && (
