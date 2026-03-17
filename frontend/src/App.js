@@ -6,7 +6,7 @@
  *   helpdesk  → Trino via /api/helpdesk/analyse
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import axios from 'axios';
 
 import ChannelSelector    from './components/ChannelSelector';
@@ -39,8 +39,6 @@ export default function App() {
   const [sessionId,        setSessionId]        = useState(null);
   const [hasMore,          setHasMore]          = useState(false);
   const [totalLoaded,      setTotalLoaded]      = useState(0);
-  const [campaignList,     setCampaignList]     = useState([]);
-  const [campaignsLoading, setCampaignsLoading] = useState(false);
   const [selectedCampaign, setSelectedCampaign] = useState(null);
   const [campaignDetail,   setCampaignDetail]   = useState(null);
 
@@ -83,19 +81,6 @@ export default function App() {
     setRawFeedback([]);
     setError(null);
   }, []);
-
-  // Fetch campaign list whenever campaigns channel is active or date range changes
-  useEffect(() => {
-    if (selectedChannel !== 'campaigns') return;
-    setCampaignsLoading(true);
-    setCampaignList([]);
-    setSelectedCampaign(null);
-    setCampaignDetail(null);
-    axios.get(`${API_BASE}/campaigns?date_range=${dateRange}`)
-      .then(res => setCampaignList(res.data))
-      .catch(() => setCampaignList([]))
-      .finally(() => setCampaignsLoading(false));
-  }, [selectedChannel, dateRange]);
 
   const handleAnalyse = useCallback(async () => {
     setLoading(true);
@@ -212,8 +197,6 @@ export default function App() {
           helpdeskCategory={helpdeskCategory}
           helpdeskProduct={helpdeskProduct}
           dateRange={dateRange}
-          campaigns={campaignList}
-          campaignsLoading={campaignsLoading}
           selectedCampaign={selectedCampaign}
           onSelectChannel={handleSelectChannel}
           onSelectAppStoreApp={(id) => {

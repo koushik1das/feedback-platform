@@ -69,7 +69,8 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
             const langs       = iss.comment_langs           || [];
             const dates       = iss.comment_dates           || [];
             const ratings     = iss.comment_ratings         || [];
-            const fnCallsList = iss.comment_function_calls  || [];
+            const fnCallsList  = iss.comment_function_calls  || [];
+            const durations    = iss.comment_durations        || [];
 
             return (
               <div
@@ -148,6 +149,7 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
                           const dateStr   = dates[i] || null;
                           const rating    = ratings[i] != null ? ratings[i] : null;
                           const fnCalls   = fnCallsList[i] || [];
+                          const duration  = durations[i] != null ? durations[i] : null;
 
                           return (
                             <div key={i} style={{ marginBottom: '.75rem' }}>
@@ -180,14 +182,23 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
                                   </span>
                                 )}
 
-                                {/* Date tag */}
+                                {/* Date + Time tags */}
                                 {dateStr && (
                                   <span style={{
                                     fontSize: '.68rem', fontWeight: 500,
                                     background: '#f1f5f9', color: '#64748b',
                                     borderRadius: 4, padding: '2px 7px',
                                   }}>
-                                    📅 {dateStr}
+                                    📅 {dateStr.slice(0, 10)}
+                                  </span>
+                                )}
+                                {dateStr && dateStr.length > 10 && (
+                                  <span style={{
+                                    fontSize: '.68rem', fontWeight: 500,
+                                    background: '#f1f5f9', color: '#64748b',
+                                    borderRadius: 4, padding: '2px 7px',
+                                  }}>
+                                    🕐 {dateStr.slice(11, 16)}
                                   </span>
                                 )}
 
@@ -257,7 +268,8 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
                                   const isPlaying = playingKey === playKey;
                                   const hasError  = audioError === playKey;
 
-                                  const [yyyy, mm, dd] = dateStr.split('-');
+                                  const dateOnly = dateStr.slice(0, 10);   // "YYYY-MM-DD"
+                                  const [yyyy, mm, dd] = dateOnly.split('-');
                                   const dateFmt = `${dd}-${mm}-${yyyy}`;
                                   const gatewayUrl = `https://cst-gateway-int.paytm.com/recording/obd/${dateFmt}/${ticketId}.wav`;
                                   const proxyUrl = `${API_BASE}/campaigns/recording?recording_url=${encodeURIComponent(gatewayUrl)}`;
@@ -284,19 +296,30 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
                                   );
 
                                   return (
-                                    <button
-                                      onClick={(e) => { e.stopPropagation(); setPlayingKey(playKey); setAudioError(null); }}
-                                      style={{
-                                        background: 'none', border: '1px solid #6366f1', borderRadius: 20,
-                                        cursor: 'pointer', fontSize: '.68rem', fontWeight: 600, color: '#6366f1',
-                                        padding: '2px 10px', display: 'inline-flex', alignItems: 'center', gap: '.25rem',
-                                        transition: 'background .15s, color .15s',
-                                      }}
-                                      onMouseEnter={(e) => { e.currentTarget.style.background = '#6366f1'; e.currentTarget.style.color = '#fff'; }}
-                                      onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#6366f1'; }}
-                                    >
-                                      🎧 Listen
-                                    </button>
+                                    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '.3rem' }}>
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); setPlayingKey(playKey); setAudioError(null); }}
+                                        style={{
+                                          background: 'none', border: '1px solid #6366f1', borderRadius: 20,
+                                          cursor: 'pointer', fontSize: '.68rem', fontWeight: 600, color: '#6366f1',
+                                          padding: '2px 10px', display: 'inline-flex', alignItems: 'center', gap: '.25rem',
+                                          transition: 'background .15s, color .15s',
+                                        }}
+                                        onMouseEnter={(e) => { e.currentTarget.style.background = '#6366f1'; e.currentTarget.style.color = '#fff'; }}
+                                        onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#6366f1'; }}
+                                      >
+                                        🎧 Listen
+                                      </button>
+                                      {duration != null && duration > 0 && (
+                                        <span style={{
+                                          fontSize: '.68rem', fontWeight: 500,
+                                          background: '#f1f5f9', color: '#64748b',
+                                          borderRadius: 4, padding: '2px 7px',
+                                        }}>
+                                          ⏱ {duration < 60 ? `${duration}s` : `${Math.floor(duration/60)}m${duration%60 ? ` ${duration%60}s` : ''}`}
+                                        </span>
+                                      )}
+                                    </div>
                                   );
                                 })()}
                               </div>
@@ -338,6 +361,7 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
         <TranscriptModal
           ticketId={transcriptId}
           helpdeskType={helpdeskType}
+          showEval={!showListenButton}
           onClose={() => setTranscriptId(null)}
         />
       )}

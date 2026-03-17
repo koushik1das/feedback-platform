@@ -199,6 +199,7 @@ function SessionTable({ sessions }) {
         <TranscriptModal
           ticketId={sessionModal}
           helpdeskType="merchant"
+          showEval={false}
           onClose={() => setSessionModal(null)}
         />
       )}

@@ -41,6 +41,16 @@ const DATE_RANGES = [
   { id: 'last_30_days',         label: 'Last 30 Days',           icon: '📊' },
 ];
 
+// Hardcoded outbound campaign list grouped by category
+const CAMPAIGNS = [
+  { cat: 'Deactivation', items: ['Deactivation Retention Offer'] },
+  { cat: 'FSM',          items: ['FSM Winback', 'FSM Churn', 'FSM Ticket Issue Resolution'] },
+  { cat: 'GMV',          items: ['GMV Drop Resolution'] },
+  { cat: 'Uncontactable',items: ['Uncontactable Merchant Reachout'] },
+  { cat: 'FSE',          items: ['FSE Appt Confirmation'] },
+  { cat: 'EDC',          items: ['New EDC Customer Engagement', 'EDC Churn Prevention'] },
+];
+
 // Customer category → sub-category (cst_entity) map
 const CUSTOMER_CATEGORIES = [
   {
@@ -132,8 +142,6 @@ export default function ChannelSelector({
   helpdeskCategory,
   helpdeskProduct,
   dateRange,
-  campaigns,
-  campaignsLoading,
   selectedCampaign,
   onSelectChannel,
   onSelectAppStoreApp,
@@ -242,43 +250,27 @@ export default function ChannelSelector({
       {selectedChannel === 'campaigns' && (
         <div className="product-selector">
           <p className="product-selector-label">Select Campaign</p>
-          {campaignsLoading && (
-            <div style={{ fontSize: '.82rem', color: '#64748b', padding: '.5rem 0' }}>Loading campaigns…</div>
-          )}
-          {!campaignsLoading && campaigns.length === 0 && (
-            <div style={{ fontSize: '.82rem', color: '#94a3b8', padding: '.5rem 0' }}>No campaigns found for selected date range.</div>
-          )}
-          {!campaignsLoading && campaigns.length > 0 && (() => {
-            // Group campaigns by category
-            const groups = [];
-            const seen = {};
-            campaigns.forEach((c) => {
-              const cat = c.category || 'Other';
-              if (!seen[cat]) { seen[cat] = []; groups.push({ cat, items: seen[cat] }); }
-              seen[cat].push(c);
-            });
-            return groups.map(({ cat, items }) => (
-              <div key={cat} style={{ marginBottom: '.75rem' }}>
-                <div style={{
-                  fontSize: '.68rem', fontWeight: 700, textTransform: 'uppercase',
-                  letterSpacing: '.06em', color: '#94a3b8', marginBottom: '.4rem',
-                }}>
-                  {cat}
-                </div>
-                <div className="product-pills" style={{ flexWrap: 'wrap' }}>
-                  {items.map((c) => (
-                    <button
-                      key={c.name}
-                      className={`product-pill ${selectedCampaign === c.name ? 'active' : ''}`}
-                      onClick={() => onSelectCampaign(c.name)}
-                    >
-                      {c.name}
-                    </button>
-                  ))}
-                </div>
+          {CAMPAIGNS.map(({ cat, items }) => (
+            <div key={cat} style={{ marginBottom: '.75rem' }}>
+              <div style={{
+                fontSize: '.68rem', fontWeight: 700, textTransform: 'uppercase',
+                letterSpacing: '.06em', color: '#94a3b8', marginBottom: '.4rem',
+              }}>
+                {cat}
               </div>
-            ));
-          })()}
+              <div className="product-pills" style={{ flexWrap: 'wrap' }}>
+                {items.map((name) => (
+                  <button
+                    key={name}
+                    className={`product-pill ${selectedCampaign === name ? 'active' : ''}`}
+                    onClick={() => onSelectCampaign(name)}
+                  >
+                    {name}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

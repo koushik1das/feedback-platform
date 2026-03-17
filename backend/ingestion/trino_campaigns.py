@@ -220,10 +220,10 @@ def fetch_campaign_analysis(campaign: str, date_range: str = "last_7_days") -> D
     """)
     issue_tone_rows = cur.fetchall()
 
-    # Sample comments per issue — include c.start_time so UI can build recording URL
+    # Sample comments per issue — include c.start_time and duration so UI can build recording URL
     cur.execute(f"""
         SELECT f.out_key_problem_desc, f.out_key_problem_sub_desc,
-               f.ticket_id, f.out_merchant_tone, c.start_time
+               f.ticket_id, f.out_merchant_tone, c.start_time, c.call_duration_seconds
         FROM {CAMPAIGN_TABLE} c
         JOIN {EVAL_TABLE} f ON c.session_id = f.ticket_id
         WHERE c.call_direction = 'OUTBOUND_TELCO'
@@ -276,11 +276,11 @@ def fetch_campaign_analysis(campaign: str, date_range: str = "last_7_days") -> D
         l1_data[l1]["tone_counts"][tone or "neutral"] += cnt
 
     comments_by_l1: Dict[str, List] = defaultdict(list)
-    for l1, comment, ticket_id, tone, start_time in comment_rows:
+    for l1, comment, ticket_id, tone, start_time, duration in comment_rows:
         if l1 and comment and len(comments_by_l1[l1]) < 10:
-            date_str = str(start_time)[:10] if start_time else None
+            date_str = str(start_time)[:16] if start_time else None  # "YYYY-MM-DD HH:MM"
             fn_calls = fn_calls_by_tid.get(ticket_id, []) or []
-            comments_by_l1[l1].append((comment, ticket_id, tone, _detect_lang(comment), date_str, fn_calls))
+            comments_by_l1[l1].append((comment, ticket_id, tone, _detect_lang(comment), date_str, fn_calls, int(duration or 0)))
 
     sorted_l1 = sorted(l1_data.items(), key=lambda x: x[1]["total"], reverse=True)
     issue_total = sum(d["total"] for _, d in sorted_l1)
@@ -305,6 +305,7 @@ def fetch_campaign_analysis(campaign: str, date_range: str = "last_7_days") -> D
             "comment_dates":          [c[4] for c in issue_comments],
             "comment_ratings":        [None  for c in issue_comments],
             "comment_function_calls": [c[5] for c in issue_comments],
+            "comment_durations":      [c[6] for c in issue_comments],
         })
 
     return {

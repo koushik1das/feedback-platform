@@ -474,7 +474,7 @@ function FunctionCallsSection({ calls, loading, error }) {
   );
 }
 
-export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', onClose }) {
+export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', showEval = true, onClose }) {
   const [messages,    setMessages]    = useState([]);
   const [masterData,  setMasterData]  = useState(null);
   const [evalData,    setEvalData]    = useState(null);
@@ -688,18 +688,19 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', o
           {/* ── RIGHT: Eval + Master Data ── */}
           <div style={{ width:'50%', display:'flex', flexDirection:'column', overflow:'hidden' }}>
 
-            {/* Eval Analysis header */}
-            <div style={{ padding:'.6rem 1rem', borderBottom:'1px solid #f1f5f9',
-              background:'#f8fafc', flexShrink:0 }}>
-              <span style={{ fontSize:'.78rem', fontWeight:700, color:'#64748b',
-                textTransform:'uppercase', letterSpacing:'.06em' }}>
-                📊 Eval Analysis
-              </span>
-            </div>
+            {showEval && (
+              <div style={{ padding:'.6rem 1rem', borderBottom:'1px solid #f1f5f9',
+                background:'#f8fafc', flexShrink:0 }}>
+                <span style={{ fontSize:'.78rem', fontWeight:700, color:'#64748b',
+                  textTransform:'uppercase', letterSpacing:'.06em' }}>
+                  📊 Eval Analysis
+                </span>
+              </div>
+            )}
 
             <div style={{ flex:1, overflowY:'auto' }}>
               {/* Eval card */}
-              <EvalSection evalData={evalData} loading={evalLoading} error={evalError} />
+              {showEval && <EvalSection evalData={evalData} loading={evalLoading} error={evalError} />}
 
               {/* Function Calls header */}
               <div style={{ padding:'.6rem 1rem', borderBottom:'1px solid #f1f5f9',

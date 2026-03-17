@@ -65,6 +65,7 @@ class IssueStats(BaseModel):
     comment_dates:          Optional[List[Optional[str]]]        = None  # parallel — feedback dates
     comment_ratings:        Optional[List[Optional[float]]]      = None  # parallel — star ratings
     comment_function_calls: Optional[List[Optional[List[str]]]]  = None  # parallel — function call names per session
+    comment_durations:      Optional[List[Optional[int]]]        = None  # parallel — call duration seconds
     channels:               Dict[str, int]   # breakdown by channel
 
 
