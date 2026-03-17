@@ -132,19 +132,23 @@ export default function ChannelSelector({
   helpdeskCategory,
   helpdeskProduct,
   dateRange,
+  campaigns,
+  campaignsLoading,
+  selectedCampaign,
   onSelectChannel,
   onSelectAppStoreApp,
   onSelectHelpdeskType,
   onSelectHelpdeskCategory,
   onSelectProduct,
   onSelectDateRange,
+  onSelectCampaign,
   onAnalyse,
   loading,
 }) {
   const selectedCategoryDef = CUSTOMER_CATEGORIES.find(c => c.id === helpdeskCategory);
 
   const canAnalyse =
-    selectedChannel === 'campaigns' ||
+    (selectedChannel === 'campaigns' && selectedCampaign !== null) ||
     (selectedChannel === 'app_store' && appStoreApp !== null) ||
     (selectedChannel === 'helpdesk' &&
       helpdeskType === 'merchant' && helpdeskProduct !== null) ||
@@ -153,8 +157,8 @@ export default function ChannelSelector({
 
   // Label for Analyse button
   let analyseLabel = '';
-  if (selectedChannel === 'campaigns') {
-    analyseLabel = ' · Outbound Campaigns';
+  if (selectedChannel === 'campaigns' && selectedCampaign) {
+    analyseLabel = ` · ${selectedCampaign}`;
   } else if (selectedChannel === 'app_store' && appStoreApp) {
     const app = APP_STORE_APPS.find(a => a.id === appStoreApp);
     analyseLabel = ` · ${app?.label || appStoreApp}`;
@@ -209,6 +213,49 @@ export default function ChannelSelector({
                 title={app.description}
               >
                 <span>{app.icon}</span>{app.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Campaign pills ── */}
+      {selectedChannel === 'campaigns' && (
+        <div className="product-selector">
+          <p className="product-selector-label" style={{ display: 'flex', alignItems: 'center', gap: '.4rem' }}>
+            <span>🗓️</span> Date Range
+          </p>
+          <div className="product-pills">
+            {DATE_RANGES.map((dr) => (
+              <button
+                key={dr.id}
+                className={`product-pill ${dateRange === dr.id ? 'active' : ''}`}
+                onClick={() => onSelectDateRange(dr.id)}
+              >
+                <span>{dr.icon}</span>{dr.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {selectedChannel === 'campaigns' && (
+        <div className="product-selector">
+          <p className="product-selector-label">Select Campaign</p>
+          {campaignsLoading && (
+            <div style={{ fontSize: '.82rem', color: '#64748b', padding: '.5rem 0' }}>Loading campaigns…</div>
+          )}
+          {!campaignsLoading && campaigns.length === 0 && (
+            <div style={{ fontSize: '.82rem', color: '#94a3b8', padding: '.5rem 0' }}>No campaigns found for selected date range.</div>
+          )}
+          <div className="product-pills" style={{ flexWrap: 'wrap' }}>
+            {campaigns.map((c) => (
+              <button
+                key={c.name}
+                className={`product-pill ${selectedCampaign === c.name ? 'active' : ''}`}
+                onClick={() => onSelectCampaign(c.name)}
+              >
+                📞 {c.name}
               </button>
             ))}
           </div>

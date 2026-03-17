@@ -6,7 +6,7 @@
  *   helpdesk  → Trino via /api/helpdesk/analyse
  */
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import axios from 'axios';
 
 import ChannelSelector    from './components/ChannelSelector';
@@ -39,6 +39,10 @@ export default function App() {
   const [sessionId,        setSessionId]        = useState(null);
   const [hasMore,          setHasMore]          = useState(false);
   const [totalLoaded,      setTotalLoaded]      = useState(0);
+  const [campaignList,     setCampaignList]     = useState([]);
+  const [campaignsLoading, setCampaignsLoading] = useState(false);
+  const [selectedCampaign, setSelectedCampaign] = useState(null);
+  const [campaignDetail,   setCampaignDetail]   = useState(null);
 
   const handleSelectChannel = useCallback((id) => {
     setSelectedChannel(id);
@@ -52,6 +56,8 @@ export default function App() {
     setSessionId(null);
     setHasMore(false);
     setTotalLoaded(0);
+    setSelectedCampaign(null);
+    setCampaignDetail(null);
   }, []);
 
   const handleSelectHelpdeskType = useCallback((type) => {
@@ -78,6 +84,19 @@ export default function App() {
     setError(null);
   }, []);
 
+  // Fetch campaign list whenever campaigns channel is active or date range changes
+  useEffect(() => {
+    if (selectedChannel !== 'campaigns') return;
+    setCampaignsLoading(true);
+    setCampaignList([]);
+    setSelectedCampaign(null);
+    setCampaignDetail(null);
+    axios.get(`${API_BASE}/campaigns?date_range=${dateRange}`)
+      .then(res => setCampaignList(res.data))
+      .catch(() => setCampaignList([]))
+      .finally(() => setCampaignsLoading(false));
+  }, [selectedChannel, dateRange]);
+
   const handleAnalyse = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -86,7 +105,10 @@ export default function App() {
 
     try {
       if (selectedChannel === 'campaigns') {
-        // CampaignDashboard fetches its own data — nothing to do here
+        const res = await axios.get(
+          `${API_BASE}/campaigns/analyse?campaign=${encodeURIComponent(selectedCampaign)}&date_range=${dateRange}`
+        );
+        setCampaignDetail(res.data);
         return;
       } else if (selectedChannel === 'helpdesk') {
         // ── Helpdesk → Trino ──────────────────────────────────────────────
@@ -134,7 +156,7 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, [selectedChannel, appStoreApp, helpdeskType, helpdeskProduct, dateRange]);
+  }, [selectedChannel, appStoreApp, helpdeskType, helpdeskProduct, dateRange, selectedCampaign]);
 
   const handleLoadMore = useCallback(async () => {
     if (!sessionId) return;
@@ -190,6 +212,9 @@ export default function App() {
           helpdeskCategory={helpdeskCategory}
           helpdeskProduct={helpdeskProduct}
           dateRange={dateRange}
+          campaigns={campaignList}
+          campaignsLoading={campaignsLoading}
+          selectedCampaign={selectedCampaign}
           onSelectChannel={handleSelectChannel}
           onSelectAppStoreApp={(id) => {
             setAppStoreApp(id);
@@ -201,6 +226,10 @@ export default function App() {
           onSelectHelpdeskCategory={handleSelectHelpdeskCategory}
           onSelectProduct={handleSelectProduct}
           onSelectDateRange={setDateRange}
+          onSelectCampaign={(name) => {
+            setSelectedCampaign(name);
+            setCampaignDetail(null);
+          }}
           onAnalyse={handleAnalyse}
           loading={loading}
         />
@@ -221,8 +250,8 @@ export default function App() {
         )}
 
         {/* ── Campaigns view ── */}
-        {selectedChannel === 'campaigns' && !loading && (
-          <CampaignDashboard />
+        {selectedChannel === 'campaigns' && !loading && campaignDetail && (
+          <CampaignDashboard detail={campaignDetail} />
         )}
 
         {/* ── Results ── */}
@@ -276,7 +305,15 @@ export default function App() {
         )}
 
         {/* ── Idle empty state ── */}
-        {!insights && !loading && !error && (
+        {selectedChannel === 'campaigns' && !loading && !campaignDetail && !error && (
+          <div className="empty-state">
+            <div className="empty-state-icon">📞</div>
+            <h3>Select a campaign above and click Analyse</h3>
+            <p>View call statistics, duration breakdown, daily trends, and individual session recordings.</p>
+          </div>
+        )}
+
+        {!insights && !campaignDetail && !loading && !error && selectedChannel !== 'campaigns' && (
           <div className="empty-state">
             <div className="empty-state-icon">📡</div>
             <h3>Select a channel above and click Analyse</h3>
