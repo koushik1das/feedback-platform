@@ -248,17 +248,37 @@ export default function ChannelSelector({
           {!campaignsLoading && campaigns.length === 0 && (
             <div style={{ fontSize: '.82rem', color: '#94a3b8', padding: '.5rem 0' }}>No campaigns found for selected date range.</div>
           )}
-          <div className="product-pills" style={{ flexWrap: 'wrap' }}>
-            {campaigns.map((c) => (
-              <button
-                key={c.name}
-                className={`product-pill ${selectedCampaign === c.name ? 'active' : ''}`}
-                onClick={() => onSelectCampaign(c.name)}
-              >
-                📞 {c.name}
-              </button>
-            ))}
-          </div>
+          {!campaignsLoading && campaigns.length > 0 && (() => {
+            // Group campaigns by category
+            const groups = [];
+            const seen = {};
+            campaigns.forEach((c) => {
+              const cat = c.category || 'Other';
+              if (!seen[cat]) { seen[cat] = []; groups.push({ cat, items: seen[cat] }); }
+              seen[cat].push(c);
+            });
+            return groups.map(({ cat, items }) => (
+              <div key={cat} style={{ marginBottom: '.75rem' }}>
+                <div style={{
+                  fontSize: '.68rem', fontWeight: 700, textTransform: 'uppercase',
+                  letterSpacing: '.06em', color: '#94a3b8', marginBottom: '.4rem',
+                }}>
+                  {cat}
+                </div>
+                <div className="product-pills" style={{ flexWrap: 'wrap' }}>
+                  {items.map((c) => (
+                    <button
+                      key={c.name}
+                      className={`product-pill ${selectedCampaign === c.name ? 'active' : ''}`}
+                      onClick={() => onSelectCampaign(c.name)}
+                    >
+                      {c.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ));
+          })()}
         </div>
       )}
 

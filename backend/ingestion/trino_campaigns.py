@@ -10,6 +10,24 @@ from ingestion.trino_helpdesk import _connect, _resolve_date_range
 
 CAMPAIGN_TABLE = "hive.mhd_crm_cst.cs_call_details_record_snapshot_v3"
 
+# Known prefix tokens used to bucket campaigns into groups
+_KNOWN_PREFIXES = {"FSM", "FSE", "EDC", "GMV", "IVR", "OBD"}
+
+
+def _campaign_category(name: str) -> str:
+    """
+    Derive a display category from a campaign name.
+    Checks first two words for known short-code prefixes; falls back to the
+    capitalised first word.
+    """
+    if not name:
+        return "Other"
+    words = name.split()
+    for w in words[:2]:
+        if w.upper() in _KNOWN_PREFIXES:
+            return w.upper()
+    return words[0].capitalize() if words else "Other"
+
 
 def fetch_campaign_list(date_range: str = "last_7_days") -> List[Dict[str, Any]]:
     """
@@ -54,6 +72,7 @@ def fetch_campaign_list(date_range: str = "last_7_days") -> List[Dict[str, Any]]
         answer_rate = round(answered / total * 100, 1) if total else 0.0
         campaigns.append({
             "name":            campaign,
+            "category":        _campaign_category(campaign),
             "total_calls":     total or 0,
             "avg_duration":    int(avg_dur or 0),
             "answer_rate":     answer_rate,

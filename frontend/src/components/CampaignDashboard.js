@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useMemo } from 'react';
+import TranscriptModal from './TranscriptModal';
 
 const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
 
@@ -27,10 +28,11 @@ const STATUS_STYLE = {
 };
 
 function SessionTable({ sessions }) {
-  const [search,     setSearch]     = useState('');
-  const [page,       setPage]       = useState(0);
-  const [playingId,  setPlayingId]  = useState(null);
-  const [audioError, setAudioError] = useState(null);
+  const [search,      setSearch]      = useState('');
+  const [page,        setPage]        = useState(0);
+  const [playingId,   setPlayingId]   = useState(null);
+  const [audioError,  setAudioError]  = useState(null);
+  const [sessionModal, setSessionModal] = useState(null); // session_id for TranscriptModal
 
   const filtered = useMemo(() => {
     if (!search.trim()) return sessions;
@@ -73,6 +75,7 @@ function SessionTable({ sessions }) {
               <th style={{ textAlign: 'left', padding: '.5rem .75rem', color: '#64748b', fontWeight: 600 }}>Status</th>
               <th style={{ textAlign: 'left', padding: '.5rem .75rem', color: '#64748b', fontWeight: 600 }}>Disconnected By</th>
               <th style={{ textAlign: 'left', padding: '.5rem .75rem', color: '#64748b', fontWeight: 600 }}>Recording</th>
+              <th style={{ textAlign: 'left', padding: '.5rem .75rem', color: '#64748b', fontWeight: 600 }}>Detail</th>
             </tr>
           </thead>
           <tbody>
@@ -101,6 +104,23 @@ function SessionTable({ sessions }) {
                   <td style={{ padding: '.45rem .75rem', color: '#64748b', fontSize: '.78rem' }}>
                     {s.disconnection_source === 'far_end'  ? '👤 Customer' :
                      s.disconnection_source === 'near_end' ? '🤖 Bot'      : s.disconnection_source}
+                  </td>
+                  <td style={{ padding: '.45rem .75rem' }}>
+                    {s.session_id && (
+                      <button
+                        onClick={() => setSessionModal(s.session_id)}
+                        style={{
+                          display: 'inline-flex', alignItems: 'center', gap: '.3rem',
+                          fontSize: '.72rem', fontWeight: 600, color: '#8b5cf6',
+                          border: '1px solid #8b5cf6', borderRadius: 20,
+                          padding: '2px 10px', background: 'none', cursor: 'pointer',
+                        }}
+                        onMouseEnter={e => { e.currentTarget.style.background = '#8b5cf6'; e.currentTarget.style.color = '#fff'; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#8b5cf6'; }}
+                      >
+                        💬 View
+                      </button>
+                    )}
                   </td>
                   <td style={{ padding: '.45rem .75rem' }}>
                     {(() => {
@@ -171,6 +191,15 @@ function SessionTable({ sessions }) {
             style={{ padding: '.3rem .75rem', borderRadius: 6, border: '1px solid #e2e8f0', cursor: page === totalPages - 1 ? 'not-allowed' : 'pointer', background: '#fff' }}
           >Next →</button>
         </div>
+      )}
+
+      {/* Session detail modal — reuses helpdesk TranscriptModal with session_id as ticket_id */}
+      {sessionModal && (
+        <TranscriptModal
+          ticketId={sessionModal}
+          helpdeskType="merchant"
+          onClose={() => setSessionModal(null)}
+        />
       )}
     </div>
   );
