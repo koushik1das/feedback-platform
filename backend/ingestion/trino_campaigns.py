@@ -3,12 +3,14 @@ Trino queries for Outbound Campaign analytics.
 Table: hive.mhd_crm_cst.cs_call_details_record_snapshot_v3
 """
 
+from collections import defaultdict
 from datetime import datetime
 from typing import Any, Dict, List
 
-from ingestion.trino_helpdesk import _connect, _resolve_date_range
+from ingestion.trino_helpdesk import _connect, _resolve_date_range, _detect_lang, TONE_SCORE, _score_to_label
 
 CAMPAIGN_TABLE = "hive.mhd_crm_cst.cs_call_details_record_snapshot_v3"
+EVAL_TABLE     = "hive.mhd_crm_cst.feedback_complete_analyzed_data_snapshot_v3"
 
 # Known prefix tokens used to bucket campaigns into groups
 _KNOWN_PREFIXES = {"FSM", "FSE", "EDC", "GMV", "IVR", "OBD"}
@@ -200,6 +202,78 @@ def fetch_campaign_analysis(campaign: str, date_range: str = "last_7_days") -> D
         for sid, dur, st, ts, disc, rec in cur.fetchall()
     ]
 
+    # ── Issues from eval table (session_id = ticket_id JOIN) ─────────────────
+    # Tone counts per issue for sentiment
+    cur.execute(f"""
+        SELECT f.out_key_problem_desc, f.out_merchant_tone, COUNT(*) AS cnt
+        FROM {CAMPAIGN_TABLE} c
+        JOIN {EVAL_TABLE} f ON c.session_id = f.ticket_id
+        WHERE c.call_direction = 'OUTBOUND_TELCO'
+          AND c.dl_last_updated BETWEEN DATE '{since}' AND DATE '{until}'
+          AND c.pre_call_intent = '{campaign}'
+          AND f.dl_last_updated >= DATE '2025-01-01'
+          AND f.task_status = 'completed'
+          AND f.out_key_problem_desc IS NOT NULL
+          AND f.out_key_problem_desc NOT IN ('Others', 'NA', 'None', '')
+        GROUP BY f.out_key_problem_desc, f.out_merchant_tone
+    """)
+    issue_tone_rows = cur.fetchall()
+
+    # Sample comments per issue with ticket_id, tone, language, date
+    cur.execute(f"""
+        SELECT f.out_key_problem_desc, f.out_key_problem_sub_desc,
+               f.ticket_id, f.out_merchant_tone, f.dl_last_updated
+        FROM {CAMPAIGN_TABLE} c
+        JOIN {EVAL_TABLE} f ON c.session_id = f.ticket_id
+        WHERE c.call_direction = 'OUTBOUND_TELCO'
+          AND c.dl_last_updated BETWEEN DATE '{since}' AND DATE '{until}'
+          AND c.pre_call_intent = '{campaign}'
+          AND f.dl_last_updated >= DATE '2025-01-01'
+          AND f.task_status = 'completed'
+          AND f.out_key_problem_desc IS NOT NULL
+          AND f.out_key_problem_desc NOT IN ('Others', 'NA', 'None', '')
+          AND f.out_key_problem_sub_desc IS NOT NULL
+          AND f.out_key_problem_sub_desc NOT IN ('Others', 'NA', 'None', '')
+        LIMIT 2000
+    """)
+    comment_rows = cur.fetchall()
+
+    # Aggregate
+    l1_data: Dict[str, Dict] = defaultdict(lambda: {"total": 0, "tone_counts": defaultdict(int)})
+    for l1, tone, cnt in issue_tone_rows:
+        l1_data[l1]["total"] += cnt
+        l1_data[l1]["tone_counts"][tone or "neutral"] += cnt
+
+    comments_by_l1: Dict[str, List] = defaultdict(list)
+    for l1, comment, ticket_id, tone, row_date in comment_rows:
+        if l1 and comment and len(comments_by_l1[l1]) < 10:
+            date_str = str(row_date) if row_date else None
+            comments_by_l1[l1].append((comment, ticket_id, tone, _detect_lang(comment), date_str))
+
+    sorted_l1 = sorted(l1_data.items(), key=lambda x: x[1]["total"], reverse=True)
+    issue_total = sum(d["total"] for _, d in sorted_l1)
+
+    top_issues = []
+    for l1, data in sorted_l1[:15]:
+        l1_total = data["total"]
+        tone_counts = data["tone_counts"]
+        weighted_sum = sum(TONE_SCORE.get(t, 0.0) * c for t, c in tone_counts.items())
+        avg_score = weighted_sum / l1_total if l1_total else 0.0
+        issue_comments = comments_by_l1.get(l1, [])
+        top_issues.append({
+            "label":              l1,
+            "count":              l1_total,
+            "percentage":         round(l1_total / issue_total * 100, 1) if issue_total else 0.0,
+            "avg_sentiment":      round(avg_score, 2),
+            "sentiment_label":    _score_to_label(avg_score),
+            "example_comments":   [c[0] for c in issue_comments],
+            "comment_ticket_ids": [c[1] for c in issue_comments],
+            "comment_tones":      [c[2] for c in issue_comments],
+            "comment_langs":      [c[3] for c in issue_comments],
+            "comment_dates":      [c[4] for c in issue_comments],
+            "comment_ratings":    [None  for c in issue_comments],
+        })
+
     return {
         "campaign":         campaign,
         "since":            since,
@@ -216,5 +290,6 @@ def fetch_campaign_analysis(campaign: str, date_range: str = "last_7_days") -> D
         "daily_trend":      daily_trend,
         "duration_buckets": duration_buckets,
         "sessions":         sessions,
+        "top_issues":       top_issues,
         "generated_at":     datetime.utcnow().isoformat(),
     }

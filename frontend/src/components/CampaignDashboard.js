@@ -5,6 +5,7 @@
 
 import React, { useState, useMemo } from 'react';
 import TranscriptModal from './TranscriptModal';
+import IssueList from './IssueList';
 
 const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
 
@@ -296,6 +297,13 @@ export default function CampaignDashboard({ detail }) {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* Issues & Customer Voice — from eval table joined on session_id = ticket_id */}
+      {detail.top_issues?.length > 0 && (
+        <div style={{ marginBottom: '1.5rem' }}>
+          <IssueList issues={detail.top_issues} helpdeskType="merchant" />
         </div>
       )}
 
