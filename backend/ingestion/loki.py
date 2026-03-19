@@ -371,37 +371,22 @@ def _session_date_from_trino(session_id: str, helpdesk_type: Optional[str] = Non
     return None, None, None
 
 
-def fetch_session_timeline(
-    session_id:    str,
-    start_time:    Optional[str] = None,   # IST "YYYY-MM-DDTHH:MM:SS"
-    end_time:      Optional[str] = None,
-    helpdesk_type: str = "merchant",
+def _fetch_from_loki(
+    session_id: str,
+    start_time: str,
+    end_time:   str,
+    helpdesk_type: str,
 ) -> List[Dict[str, Any]]:
     """
-    Fetch Loki logs for a session and return structured timeline events.
-
-    Times must be in IST (UTC+5:30) as expected by the Loki MCP.
-    If not provided, tries Trino to find the session date, then falls back to last 24h.
-    helpdesk_type selects the Loki MCP endpoint: "merchant" or "customer".
+    Core Loki fetch: AggregateFailureDebug → traceId → AnalyzePlugWorkflow.
+    Raises ValueError if session not found or no log lines returned.
     """
-    if not start_time or not end_time:
-        start_time, end_time, detected_type = _session_date_from_trino(session_id, helpdesk_type)
-        if detected_type:
-            helpdesk_type = detected_type
+    date_part = start_time[:10]
+    start_hms = start_time[11:19]
+    end_hms   = end_time[11:19]
 
-    if not start_time or not end_time:
-        # Fall back: search across today and yesterday in IST (full 2-day window)
-        now_ist    = datetime.utcnow() + timedelta(hours=5, minutes=30)
-        end_time   = now_ist.strftime("%Y-%m-%dT23:59:59")
-        start_time = (now_ist - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
-
-    # MCP expects date + start_time (HH:MM:SS) + end_time (HH:MM:SS) as separate fields
-    date_part  = start_time[:10]          # "YYYY-MM-DD"
-    start_hms  = start_time[11:19]        # "HH:MM:SS"
-    end_hms    = end_time[11:19]          # "HH:MM:SS"
-
-    # Step 1: get traceId from AggregateFailureDebug
-    agg_result  = _mcp_call(
+    # Step 1: get traceId
+    agg_result = _mcp_call(
         "AggregateFailureDebug",
         {
             "session_id": session_id,
@@ -412,7 +397,6 @@ def fetch_session_timeline(
         helpdesk_type=helpdesk_type,
     )
 
-    # Unwrap MCP content envelope → dict with traceId / status
     agg_data = _unwrap_mcp_content(agg_result)
     if isinstance(agg_data, str):
         try:
@@ -429,11 +413,10 @@ def fetch_session_timeline(
             raise ValueError(root_cause)
 
     trace_id = agg_data.get("traceId") if isinstance(agg_data, dict) else None
-
     if not trace_id:
         raise ValueError("No traceId found for provided sessionId in Plug logs.")
 
-    # Step 2: fetch the actual log lines using the traceId
+    # Step 2: fetch log lines
     log_result = _mcp_call(
         "AnalyzePlugWorkflow",
         {
@@ -446,7 +429,6 @@ def fetch_session_timeline(
         helpdesk_type=helpdesk_type,
     )
 
-    # AnalyzePlugWorkflow returns {narrative, raw_log_lines, ...}
     log_data = _unwrap_mcp_content(log_result)
     if isinstance(log_data, str):
         try:
@@ -457,7 +439,6 @@ def fetch_session_timeline(
     raw_lines: List[str] = []
 
     if isinstance(log_data, dict):
-        # Prefer raw_log_lines (list of {timestamp, log} dicts or strings)
         rll = log_data.get("raw_log_lines")
         if isinstance(rll, list) and rll:
             for item in rll:
@@ -465,10 +446,8 @@ def fetch_session_timeline(
                     raw_lines.append(item.get("log") or json.dumps(item))
                 elif isinstance(item, str):
                     raw_lines.append(item)
-        # Fall back to narrative (numbered log text)
         elif log_data.get("narrative"):
             narrative = log_data["narrative"]
-            # Strip leading "[N] " numbering added by AnalyzePlugWorkflow
             for line in narrative.splitlines():
                 line = re.sub(r'^\[\d+\]\s*', '', line).strip()
                 if line:
@@ -483,3 +462,41 @@ def fetch_session_timeline(
 
     events = [_classify_line(line) for line in raw_lines if line.strip()]
     return _build_timeline(events)
+
+
+def fetch_session_timeline(
+    session_id:    str,
+    start_time:    Optional[str] = None,   # IST "YYYY-MM-DDTHH:MM:SS"
+    end_time:      Optional[str] = None,
+    helpdesk_type: str = "merchant",
+) -> List[Dict[str, Any]]:
+    """
+    Fetch Loki logs for a session and return structured timeline events.
+
+    Times must be in IST (UTC+5:30) as expected by the Loki MCP.
+    If not provided, tries Trino to find the session date, then falls back to last 24h.
+    helpdesk_type selects the primary Loki MCP endpoint; automatically falls back
+    to the other endpoint if the session is not found on the first try.
+    """
+    if not start_time or not end_time:
+        start_time, end_time, detected_type = _session_date_from_trino(session_id, helpdesk_type)
+        if detected_type:
+            helpdesk_type = detected_type
+
+    if not start_time or not end_time:
+        now_ist    = datetime.utcnow() + timedelta(hours=5, minutes=30)
+        end_time   = now_ist.strftime("%Y-%m-%dT23:59:59")
+        start_time = (now_ist - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
+
+    # Try primary endpoint; if not found, retry on the other endpoint
+    fallback_type = "customer" if helpdesk_type == "merchant" else "merchant"
+    try:
+        return _fetch_from_loki(session_id, start_time, end_time, helpdesk_type)
+    except ValueError as primary_err:
+        err_str = str(primary_err)
+        if "not found" in err_str.lower() or "no traceid" in err_str.lower():
+            try:
+                return _fetch_from_loki(session_id, start_time, end_time, fallback_type)
+            except ValueError:
+                pass  # raise the original error
+        raise
