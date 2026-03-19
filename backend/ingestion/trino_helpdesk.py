@@ -182,15 +182,18 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
     """
     entity_map = CUSTOMER_CST_ENTITY_MAP if helpdesk_type == "customer" else CST_ENTITY_MAP
     cst_entity = entity_map.get(product, product)
+    schema     = DB_SCHEMA.get(helpdesk_type, "crm_cst")
+    table      = f"hive.{schema}.feedback_complete_analyzed_data_snapshot_v3"
     conn = _connect()
     cur = conn.cursor()
 
-    # Find the latest available date so all ranges are anchored to real data
+    # Find the latest date that has completed analysis (started rows have no analysis fields)
     cur.execute(f"""
         SELECT MAX(dl_last_updated)
-        FROM {TABLE}
+        FROM {table}
         WHERE cst_entity = '{cst_entity}'
           AND dl_last_updated >= DATE '2025-01-01'
+          AND task_status = 'completed'
     """)
     max_date = cur.fetchone()[0]
     if max_date is None:
@@ -202,7 +205,7 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
     # 1. Issues with tone breakdown (for avg sentiment per issue)
     cur.execute(f"""
         SELECT out_key_problem_desc, out_merchant_tone, COUNT(*) AS cnt
-        FROM {TABLE}
+        FROM {table}
         WHERE cst_entity = '{cst_entity}'
           AND task_status = 'completed'
           AND {date_filter}
@@ -215,7 +218,7 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
     # 2. Total completed records
     cur.execute(f"""
         SELECT COUNT(*)
-        FROM {TABLE}
+        FROM {table}
         WHERE cst_entity = '{cst_entity}'
           AND task_status = 'completed'
           AND {date_filter}
@@ -225,7 +228,7 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
     # 3. Overall tone distribution for sentiment summary
     cur.execute(f"""
         SELECT out_merchant_tone, COUNT(*) AS cnt
-        FROM {TABLE}
+        FROM {table}
         WHERE cst_entity = '{cst_entity}'
           AND task_status = 'completed'
           AND {date_filter}
@@ -238,7 +241,7 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
         SELECT
             COUNT(*) AS total,
             SUM(CASE WHEN social_media_threat IN ('YES', 'हाँ', 'हां') THEN 1 ELSE 0 END) AS threat_count
-        FROM {TABLE}
+        FROM {table}
         WHERE cst_entity = '{cst_entity}'
           AND task_status = 'completed'
           AND {date_filter}
@@ -252,7 +255,7 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
     cur.execute(f"""
         SELECT out_key_problem_desc, out_key_problem_sub_desc, ticket_id,
                out_merchant_tone, dl_last_updated
-        FROM {TABLE}
+        FROM {table}
         WHERE cst_entity = '{cst_entity}'
           AND task_status = 'completed'
           AND {date_filter}

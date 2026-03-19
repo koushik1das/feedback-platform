@@ -12,14 +12,19 @@ import requests
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-LOKI_MCP_URL = os.getenv(
-    "LOKI_MCP_URL",
+LOKI_MCP_URL_MERCHANT = os.getenv(
+    "LOKI_MCP_URL_MERCHANT",
     "https://cst-loki-mcp-debugging.paytm.com/mcp/protocol",
+)
+LOKI_MCP_URL_CUSTOMER = os.getenv(
+    "LOKI_MCP_URL_CUSTOMER",
+    "https://ocl-cst-loki-mcp-debugging.paytm.com/mcp",
 )
 
 # ── MCP RPC helper ────────────────────────────────────────────────────────────
 
-def _mcp_call(tool_name: str, arguments: Dict[str, Any]) -> Any:
+def _mcp_call(tool_name: str, arguments: Dict[str, Any], helpdesk_type: str = "merchant") -> Any:
+    url = LOKI_MCP_URL_CUSTOMER if helpdesk_type == "customer" else LOKI_MCP_URL_MERCHANT
     payload = {
         "jsonrpc": "2.0",
         "method": "tools/call",
@@ -27,7 +32,7 @@ def _mcp_call(tool_name: str, arguments: Dict[str, Any]) -> Any:
         "id": 1,
     }
     try:
-        resp = requests.post(LOKI_MCP_URL, json=payload, timeout=90)
+        resp = requests.post(url, json=payload, timeout=90)
         resp.raise_for_status()
     except requests.exceptions.Timeout:
         raise ValueError("Loki MCP timed out. The log server is slow — please try again.")
@@ -322,19 +327,25 @@ def _build_timeline(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def _session_date_from_trino(session_id: str) -> Optional[str]:
+def _session_date_from_trino(session_id: str, helpdesk_type: Optional[str] = None):
     """
     Try to find the session's date in Trino so we can build a sensible Loki window.
-    Returns an IST datetime string "YYYY-MM-DDTHH:MM:SS" or None.
+    Returns (start_ist, end_ist, detected_helpdesk_type) or (None, None, None).
+    If helpdesk_type is provided, only that schema is checked; otherwise both are tried.
     """
+    schema_map = {"merchant": "mhd_crm_cst", "customer": "crm_cst"}
+    if helpdesk_type and helpdesk_type in schema_map:
+        schemas = [(helpdesk_type, schema_map[helpdesk_type])]
+    else:
+        schemas = [("merchant", "mhd_crm_cst"), ("customer", "crm_cst")]
+
     try:
         import sys, os as _os
         sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), ".."))
         from ingestion.trino_helpdesk import _connect
         conn = _connect()
         cur  = conn.cursor()
-        # Check in merchant helpdesk conversation table
-        for schema in ("mhd_crm_cst", "crm_cst"):
+        for htype, schema in schemas:
             try:
                 cur.execute(f"""
                     SELECT created_at
@@ -344,36 +355,39 @@ def _session_date_from_trino(session_id: str) -> Optional[str]:
                 """)
                 row = cur.fetchone()
                 if row and row[0]:
-                    # Trino stores UTC; convert to IST (+5:30) for Loki
                     utc_dt = row[0] if isinstance(row[0], datetime) else datetime.fromisoformat(str(row[0]))
                     ist_dt = utc_dt + timedelta(hours=5, minutes=30)
-                    # ±1 hour window around the session time in IST
                     start = ist_dt - timedelta(hours=1)
                     end   = ist_dt + timedelta(hours=1)
                     return (
                         f"{start.strftime('%Y-%m-%d')}T{start.strftime('%H:%M:%S')}",
                         f"{end.strftime('%Y-%m-%d')}T{end.strftime('%H:%M:%S')}",
+                        htype,
                     )
             except Exception:
                 continue
     except Exception:
         pass
-    return None, None
+    return None, None, None
 
 
 def fetch_session_timeline(
-    session_id: str,
-    start_time: Optional[str] = None,   # IST "YYYY-MM-DDTHH:MM:SS"
-    end_time:   Optional[str] = None,
+    session_id:    str,
+    start_time:    Optional[str] = None,   # IST "YYYY-MM-DDTHH:MM:SS"
+    end_time:      Optional[str] = None,
+    helpdesk_type: str = "merchant",
 ) -> List[Dict[str, Any]]:
     """
     Fetch Loki logs for a session and return structured timeline events.
 
     Times must be in IST (UTC+5:30) as expected by the Loki MCP.
     If not provided, tries Trino to find the session date, then falls back to last 24h.
+    helpdesk_type selects the Loki MCP endpoint: "merchant" or "customer".
     """
     if not start_time or not end_time:
-        start_time, end_time = _session_date_from_trino(session_id)
+        start_time, end_time, detected_type = _session_date_from_trino(session_id, helpdesk_type)
+        if detected_type:
+            helpdesk_type = detected_type
 
     if not start_time or not end_time:
         # Fall back: search across today and yesterday in IST (full 2-day window)
@@ -395,6 +409,7 @@ def fetch_session_timeline(
             "start_time":  start_hms,
             "end_time":    end_hms,
         },
+        helpdesk_type=helpdesk_type,
     )
 
     # Unwrap MCP content envelope → dict with traceId / status
@@ -428,6 +443,7 @@ def fetch_session_timeline(
             "end_time":   end_hms,
             "limit":      200,
         },
+        helpdesk_type=helpdesk_type,
     )
 
     # AnalyzePlugWorkflow returns {narrative, raw_log_lines, ...}

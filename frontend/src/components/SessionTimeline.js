@@ -511,7 +511,7 @@ function LogQueryBot({ sessionId, events, logsLoading }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function SessionTimeline({ sessionId, startTime, endTime, sessionDatetime }) {
+export default function SessionTimeline({ sessionId, startTime, endTime, sessionDatetime, helpdeskType }) {
   const [events,   setEvents]   = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState(null);
@@ -544,6 +544,7 @@ export default function SessionTimeline({ sessionId, startTime, endTime, session
     const et = overrideEnd   || endTime;
     if (st) params.set('start_time', st);
     if (et) params.set('end_time',   et);
+    if (helpdeskType) params.set('helpdesk_type', helpdeskType);
     const qs = params.toString() ? `?${params}` : '';
 
     axios.get(`${API_BASE}/helpdesk/session-timeline/${sessionId}${qs}`)

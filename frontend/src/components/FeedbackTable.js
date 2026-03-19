@@ -26,9 +26,10 @@ const CHANNEL_COLORS = {
 };
 
 function formatDate(ts) {
-  return new Date(ts).toLocaleDateString('en-IN', {
-    day: '2-digit', month: 'short', year: '2-digit',
-  });
+  if (!ts) return '—';
+  const d = new Date(ts);
+  if (isNaN(d)) return '—';
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' });
 }
 
 const PAGE_SIZE = 10;

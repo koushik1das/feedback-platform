@@ -405,37 +405,41 @@ Rules:
 
 @router.get("/helpdesk/session-timeline-raw/{session_id}", tags=["helpdesk"])
 def get_session_timeline_raw(
-    session_id: str,
-    start_time: Optional[str] = Query(default=None),
-    end_time:   Optional[str] = Query(default=None),
+    session_id:    str,
+    start_time:    Optional[str] = Query(default=None),
+    end_time:      Optional[str] = Query(default=None),
+    helpdesk_type: str           = Query(default="merchant"),
 ):
     """Return raw Loki MCP response for debugging the response format."""
     from ingestion.loki import _mcp_call, _session_date_from_trino
     from datetime import datetime, timedelta
     if not start_time or not end_time:
-        start_time, end_time = _session_date_from_trino(session_id)
+        start_time, end_time, detected = _session_date_from_trino(session_id, helpdesk_type)
+        if detected:
+            helpdesk_type = detected
     if not start_time or not end_time:
         now_ist    = datetime.utcnow() + timedelta(hours=5, minutes=30)
         end_time   = now_ist.strftime("%Y-%m-%dT%H:%M:%S")
         start_time = (now_ist - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
     try:
-        return _mcp_call("AggregateFailureDebug", {"session_id": session_id, "start_time": start_time, "end_time": end_time})
+        return _mcp_call("AggregateFailureDebug", {"session_id": session_id, "start_time": start_time, "end_time": end_time}, helpdesk_type=helpdesk_type)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/helpdesk/session-timeline/{session_id}", tags=["helpdesk"])
 def get_session_timeline(
-    session_id:  str,
-    start_time:  Optional[str] = Query(default=None, description="Window start in IST, e.g. 2026-03-17T15:20:00"),
-    end_time:    Optional[str] = Query(default=None, description="Window end in IST"),
+    session_id:    str,
+    start_time:    Optional[str] = Query(default=None, description="Window start in IST, e.g. 2026-03-17T15:20:00"),
+    end_time:      Optional[str] = Query(default=None, description="Window end in IST"),
+    helpdesk_type: str           = Query(default="merchant", description="'merchant' or 'customer'"),
 ):
     """
     Fetch structured Loki debug timeline for a session.
     Returns a list of classified events sorted chronologically.
     """
     try:
-        return fetch_session_timeline(session_id, start_time, end_time)
+        return fetch_session_timeline(session_id, start_time, end_time, helpdesk_type)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

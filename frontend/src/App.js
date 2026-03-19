@@ -244,11 +244,12 @@ export default function App() {
         const rows = [];
         (res.data.top_issues || []).forEach((iss) => {
           (iss.example_comments || []).forEach((text, i) => {
+            const dateStr = iss.comment_dates?.[i] || null;
             rows.push({
               id:            `${iss.label}-${i}`,
               source:        'helpdesk_zendesk',
               channel:       'helpdesk',
-              timestamp:     new Date().toISOString(),
+              timestamp:     dateStr ? new Date(dateStr).toISOString() : null,
               customer_text: text,
               rating:        null,
               issue_label:   iss.label,

@@ -868,6 +868,7 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
               <div style={{ flex:1, overflowY:'auto' }}>
                 <SessionTimeline
                   sessionId={ticketId}
+                  helpdeskType={helpdeskType}
                   sessionDatetime={
                     messages.length > 0 && messages[0].created_at
                       ? (() => {
