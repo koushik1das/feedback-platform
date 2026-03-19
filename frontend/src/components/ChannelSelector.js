@@ -9,9 +9,11 @@
 import React from 'react';
 
 const CHANNELS = [
-  { id: 'app_store',  name: 'App Store',          icon: '⭐', description: 'Google Play reviews & ratings',            color: '#f0fdf4' },
-  { id: 'helpdesk',   name: 'Help Desk',           icon: '🎧', description: 'Customer & merchant support interactions', color: '#fefce8' },
-  { id: 'campaigns',  name: 'Outbound Campaign',   icon: '📞', description: 'AI voice bot call analytics',             color: '#ede9fe' },
+  { id: 'app_store',  name: 'App Store',             icon: '⭐', description: 'Google Play reviews & ratings',            color: '#f0fdf4' },
+  { id: 'helpdesk',   name: 'Help Desk',              icon: '🎧', description: 'Customer & merchant support interactions', color: '#fefce8' },
+  { id: 'campaigns',  name: 'Outbound Campaign',      icon: '📞', description: 'AI voice bot call analytics',             color: '#ede9fe' },
+  { id: 'ivr',        name: 'AI IVR',                 icon: '📱', description: 'MHD Call Center inbound analytics',       color: '#f0fdf4' },
+  { id: 'soundbox',   name: 'AI Soundbox',            icon: '🔊', description: 'AI bot calls for Soundbox & EDC devices',  color: '#fef3c7' },
 ];
 
 const APP_STORE_APPS = [
@@ -49,6 +51,22 @@ const CAMPAIGNS = [
   { cat: 'Uncontactable',items: ['Uncontactable Merchant Reachout'] },
   { cat: 'FSE',          items: ['FSE Appt Confirmation'] },
   { cat: 'EDC',          items: ['New EDC Customer Engagement', 'EDC Churn Prevention'] },
+];
+
+const SOUNDBOX_CATEGORIES = [
+  { id: 'payout_settlement', label: 'Payout & Settlement', entities: ['p4bpayoutandsettlement'] },
+  { id: 'soundbox',          label: 'Soundbox',            entities: ['p4bsoundbox'] },
+  { id: 'loan',              label: 'Loan',                entities: ['p4bbusinessloan'] },
+  { id: 'profile',           label: 'Profile',             entities: ['p4bprofile'] },
+];
+
+const IVR_CATEGORIES = [
+  { id: 'loan',              label: 'Loan',                entities: ['p4bbusinessloan'] },
+  { id: 'payout_settlement', label: 'Payout & Settlement', entities: ['p4bpayoutandsettlement'] },
+  { id: 'soundbox',          label: 'Soundbox',            entities: ['p4bsoundbox', 'p4bsoundboxdeactivation', 'p4bAIBot'] },
+  { id: 'edc',               label: 'EDC',                 entities: ['p4bedc'] },
+  { id: 'profile',           label: 'Profile',             entities: ['p4bprofile'] },
+  { id: 'wealth',            label: 'Wealth',              entities: ['p4bwealth'] },
 ];
 
 // Customer category → sub-category (cst_entity) map
@@ -143,6 +161,10 @@ export default function ChannelSelector({
   helpdeskProduct,
   dateRange,
   selectedCampaign,
+  selectedIvrCategory,
+  onSelectIvrCategory,
+  selectedSoundboxCategory,
+  onSelectSoundboxCategory,
   onSelectChannel,
   onSelectAppStoreApp,
   onSelectHelpdeskType,
@@ -157,6 +179,8 @@ export default function ChannelSelector({
 
   const canAnalyse =
     (selectedChannel === 'campaigns' && selectedCampaign !== null) ||
+    (selectedChannel === 'ivr'       && selectedIvrCategory !== null) ||
+    (selectedChannel === 'soundbox'  && selectedSoundboxCategory !== null) ||
     (selectedChannel === 'app_store' && appStoreApp !== null) ||
     (selectedChannel === 'helpdesk' &&
       helpdeskType === 'merchant' && helpdeskProduct !== null) ||
@@ -167,6 +191,12 @@ export default function ChannelSelector({
   let analyseLabel = '';
   if (selectedChannel === 'campaigns' && selectedCampaign) {
     analyseLabel = ` · ${selectedCampaign}`;
+  } else if (selectedChannel === 'ivr' && selectedIvrCategory) {
+    const cat = IVR_CATEGORIES.find(c => c.id === selectedIvrCategory);
+    analyseLabel = ` · ${cat?.label || selectedIvrCategory}`;
+  } else if (selectedChannel === 'soundbox' && selectedSoundboxCategory) {
+    const cat = SOUNDBOX_CATEGORIES.find(c => c.id === selectedSoundboxCategory);
+    analyseLabel = ` · ${cat?.label || selectedSoundboxCategory}`;
   } else if (selectedChannel === 'app_store' && appStoreApp) {
     const app = APP_STORE_APPS.find(a => a.id === appStoreApp);
     analyseLabel = ` · ${app?.label || appStoreApp}`;
@@ -180,11 +210,11 @@ export default function ChannelSelector({
 
   return (
     <div className="channel-section">
-      <h2>Select Feedback Channel</h2>
+      <h2>Interaction Channel</h2>
       <p>Choose a channel to analyse. The platform will surface top customer pain points.</p>
 
       {/* ── Step 1: Channel ── */}
-      <div className="channel-grid" style={{ gridTemplateColumns: 'repeat(3, minmax(180px, 280px))' }}>
+      <div className="channel-grid" style={{ gridTemplateColumns: 'repeat(5, minmax(150px, 220px))' }}>
         {CHANNELS.map((ch) => {
           const isSelected = selectedChannel === ch.id;
           return (
@@ -241,6 +271,82 @@ export default function ChannelSelector({
                 onClick={() => onSelectDateRange(dr.id)}
               >
                 <span>{dr.icon}</span>{dr.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── IVR date range ── */}
+      {selectedChannel === 'ivr' && (
+        <div className="product-selector">
+          <p className="product-selector-label" style={{ display: 'flex', alignItems: 'center', gap: '.4rem' }}>
+            <span>🗓️</span> Date Range
+          </p>
+          <div className="product-pills">
+            {DATE_RANGES.map((dr) => (
+              <button
+                key={dr.id}
+                className={`product-pill ${dateRange === dr.id ? 'active' : ''}`}
+                onClick={() => onSelectDateRange(dr.id)}
+              >
+                <span>{dr.icon}</span>{dr.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── IVR category pills ── */}
+      {selectedChannel === 'ivr' && (
+        <div className="product-selector">
+          <p className="product-selector-label">Select Category</p>
+          <div className="product-pills" style={{ flexWrap: 'wrap' }}>
+            {IVR_CATEGORIES.map((cat) => (
+              <button
+                key={cat.id}
+                className={`product-pill ${selectedIvrCategory === cat.id ? 'active' : ''}`}
+                onClick={() => onSelectIvrCategory(cat.id)}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Soundbox date range ── */}
+      {selectedChannel === 'soundbox' && (
+        <div className="product-selector">
+          <p className="product-selector-label" style={{ display: 'flex', alignItems: 'center', gap: '.4rem' }}>
+            <span>🗓️</span> Date Range
+          </p>
+          <div className="product-pills">
+            {DATE_RANGES.map((dr) => (
+              <button
+                key={dr.id}
+                className={`product-pill ${dateRange === dr.id ? 'active' : ''}`}
+                onClick={() => onSelectDateRange(dr.id)}
+              >
+                <span>{dr.icon}</span>{dr.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Soundbox category pills ── */}
+      {selectedChannel === 'soundbox' && (
+        <div className="product-selector">
+          <p className="product-selector-label">Select Category</p>
+          <div className="product-pills" style={{ flexWrap: 'wrap' }}>
+            {SOUNDBOX_CATEGORIES.map((cat) => (
+              <button
+                key={cat.id}
+                className={`product-pill ${selectedSoundboxCategory === cat.id ? 'active' : ''}`}
+                onClick={() => onSelectSoundboxCategory(cat.id)}
+              >
+                {cat.label}
               </button>
             ))}
           </div>

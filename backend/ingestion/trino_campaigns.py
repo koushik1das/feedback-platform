@@ -327,3 +327,242 @@ def fetch_campaign_analysis(campaign: str, date_range: str = "last_7_days") -> D
         "top_issues":       top_issues,
         "generated_at":     datetime.utcnow().isoformat(),
     }
+
+
+def fetch_soundbox_insights(cst_entities: List[str], date_range: str = "last_7_days") -> Dict[str, Any]:
+    """
+    Return helpdesk-style insights for AI_EDC_AMA / AI_DEVICE_AMA calls filtered by cst_entity.
+    Same JOIN pattern as IVR: cs_call_details_record_snapshot_v3 + eval table.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+        SELECT MAX(dl_last_updated)
+        FROM {CAMPAIGN_TABLE}
+        WHERE dl_last_updated >= DATE '2025-01-01'
+          AND call_direction IN ('AI_EDC_AMA', 'AI_DEVICE_AMA')
+    """)
+    max_date = cur.fetchone()[0]
+    if not max_date:
+        return {
+            "total_feedback": 0, "channels_analysed": ["ai_soundbox"],
+            "top_issues": [], "sentiment_distribution": {"positive": 0, "neutral": 0, "negative": 0, "total": 0},
+            "trending_issues": [], "ai_summary": "No data found.", "generated_at": datetime.utcnow().isoformat(),
+        }
+
+    since, until = _resolve_date_range(max_date, date_range)
+    entities_sql = "', '".join(e.replace("'", "''") for e in cst_entities)
+
+    cur.execute(f"""
+        SELECT f.out_key_problem_desc, f.out_merchant_tone, COUNT(*) AS cnt
+        FROM {CAMPAIGN_TABLE} c
+        JOIN {EVAL_TABLE} f ON c.session_id = f.ticket_id
+        WHERE c.call_direction IN ('AI_EDC_AMA', 'AI_DEVICE_AMA')
+          AND c.dl_last_updated BETWEEN DATE '{since}' AND DATE '{until}'
+          AND f.dl_last_updated >= DATE '2025-01-01'
+          AND f.task_status = 'completed'
+          AND f.cst_entity IN ('{entities_sql}')
+          AND f.out_key_problem_desc IS NOT NULL
+          AND f.out_key_problem_desc NOT IN ('Others', 'NA', 'None', '')
+        GROUP BY f.out_key_problem_desc, f.out_merchant_tone
+    """)
+    issue_tone_rows = cur.fetchall()
+
+    cur.execute(f"""
+        SELECT f.out_key_problem_desc, f.out_key_problem_sub_desc,
+               f.ticket_id, f.out_merchant_tone, c.start_time, c.call_duration_seconds
+        FROM {CAMPAIGN_TABLE} c
+        JOIN {EVAL_TABLE} f ON c.session_id = f.ticket_id
+        WHERE c.call_direction IN ('AI_EDC_AMA', 'AI_DEVICE_AMA')
+          AND c.dl_last_updated BETWEEN DATE '{since}' AND DATE '{until}'
+          AND f.dl_last_updated >= DATE '2025-01-01'
+          AND f.task_status = 'completed'
+          AND f.cst_entity IN ('{entities_sql}')
+          AND f.out_key_problem_desc IS NOT NULL
+          AND f.out_key_problem_desc NOT IN ('Others', 'NA', 'None', '')
+          AND f.out_key_problem_sub_desc IS NOT NULL
+          AND f.out_key_problem_sub_desc NOT IN ('Others', 'NA', 'None', '')
+        LIMIT 2000
+    """)
+    comment_rows = cur.fetchall()
+
+    l1_data: Dict[str, Dict] = defaultdict(lambda: {"total": 0, "tone_counts": defaultdict(int)})
+    for l1, tone, cnt in issue_tone_rows:
+        l1_data[l1]["total"] += cnt
+        l1_data[l1]["tone_counts"][tone or "neutral"] += cnt
+
+    comments_by_l1: Dict[str, List] = defaultdict(list)
+    for l1, comment, ticket_id, tone, start_time, duration in comment_rows:
+        if l1 and comment and len(comments_by_l1[l1]) < 10:
+            date_str = str(start_time)[:16] if start_time else None
+            comments_by_l1[l1].append((comment, ticket_id, tone, _detect_lang(comment), date_str, [], int(duration or 0)))
+
+    sorted_l1 = sorted(l1_data.items(), key=lambda x: x[1]["total"], reverse=True)
+    issue_total = sum(d["total"] for _, d in sorted_l1)
+
+    all_tones: Dict[str, int] = defaultdict(int)
+    for _, data in sorted_l1:
+        for t, c in data["tone_counts"].items():
+            all_tones[t] += c
+    pos = sum(c for t, c in all_tones.items() if TONE_SCORE.get(t, 0.0) > 0)
+    neg = sum(c for t, c in all_tones.items() if TONE_SCORE.get(t, 0.0) < 0)
+    neu = sum(c for t, c in all_tones.items() if TONE_SCORE.get(t, 0.0) == 0)
+
+    top_issues = []
+    for l1, data in sorted_l1[:15]:
+        l1_total = data["total"]
+        tone_counts = data["tone_counts"]
+        weighted_sum = sum(TONE_SCORE.get(t, 0.0) * c for t, c in tone_counts.items())
+        avg_score = weighted_sum / l1_total if l1_total else 0.0
+        issue_comments = comments_by_l1.get(l1, [])
+        top_issues.append({
+            "label":                  l1,
+            "count":                  l1_total,
+            "percentage":             round(l1_total / issue_total * 100, 1) if issue_total else 0.0,
+            "avg_sentiment":          round(avg_score, 2),
+            "sentiment_label":        _score_to_label(avg_score),
+            "example_comments":       [c[0] for c in issue_comments],
+            "comment_ticket_ids":     [c[1] for c in issue_comments],
+            "comment_tones":          [c[2] for c in issue_comments],
+            "comment_langs":          [c[3] for c in issue_comments],
+            "comment_dates":          [c[4] for c in issue_comments],
+            "comment_ratings":        [None for _ in issue_comments],
+            "comment_function_calls": [c[5] for c in issue_comments],
+            "comment_durations":      [c[6] for c in issue_comments],
+            "channels":               {"ai_soundbox": l1_total},
+        })
+
+    return {
+        "total_feedback":         issue_total,
+        "channels_analysed":      ["ai_soundbox"],
+        "top_issues":             top_issues,
+        "sentiment_distribution": {"positive": pos, "neutral": neu, "negative": neg, "total": pos + neu + neg},
+        "trending_issues":        [i["label"] for i in top_issues[:3]],
+        "ai_summary":             f"AI Soundbox analysis ({since} → {until})",
+        "generated_at":           datetime.utcnow().isoformat(),
+        "data_from":              since,
+        "data_until":             until,
+    }
+
+
+def fetch_ivr_insights(cst_entities: List[str], date_range: str = "last_7_days") -> Dict[str, Any]:
+    """
+    Return helpdesk-style insights for INBOUND_TELCO calls filtered by cst_entity.
+    Joins cs_call_details_record_snapshot_v3 (INBOUND_TELCO) with
+    feedback_complete_analyzed_data_snapshot_v3 on session_id = ticket_id.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+
+    cur.execute(f"""
+        SELECT MAX(dl_last_updated)
+        FROM {CAMPAIGN_TABLE}
+        WHERE dl_last_updated >= DATE '2025-01-01'
+          AND call_direction = 'INBOUND_TELCO'
+    """)
+    max_date = cur.fetchone()[0]
+    if not max_date:
+        return {
+            "total_feedback": 0, "channels_analysed": ["ivr_inbound"],
+            "top_issues": [], "sentiment_distribution": {"positive": 0, "neutral": 0, "negative": 0, "total": 0},
+            "trending_issues": [], "ai_summary": "No data found.", "generated_at": datetime.utcnow().isoformat(),
+        }
+
+    since, until = _resolve_date_range(max_date, date_range)
+    entities_sql = "', '".join(e.replace("'", "''") for e in cst_entities)
+
+    # ── Issue tone counts ─────────────────────────────────────────────────────
+    cur.execute(f"""
+        SELECT f.out_key_problem_desc, f.out_merchant_tone, COUNT(*) AS cnt
+        FROM {CAMPAIGN_TABLE} c
+        JOIN {EVAL_TABLE} f ON c.session_id = f.ticket_id
+        WHERE c.call_direction = 'INBOUND_TELCO'
+          AND c.dl_last_updated BETWEEN DATE '{since}' AND DATE '{until}'
+          AND f.dl_last_updated >= DATE '2025-01-01'
+          AND f.task_status = 'completed'
+          AND f.cst_entity IN ('{entities_sql}')
+          AND f.out_key_problem_desc IS NOT NULL
+          AND f.out_key_problem_desc NOT IN ('Others', 'NA', 'None', '')
+        GROUP BY f.out_key_problem_desc, f.out_merchant_tone
+    """)
+    issue_tone_rows = cur.fetchall()
+
+    # ── Sample comments ───────────────────────────────────────────────────────
+    cur.execute(f"""
+        SELECT f.out_key_problem_desc, f.out_key_problem_sub_desc,
+               f.ticket_id, f.out_merchant_tone, c.start_time, c.call_duration_seconds
+        FROM {CAMPAIGN_TABLE} c
+        JOIN {EVAL_TABLE} f ON c.session_id = f.ticket_id
+        WHERE c.call_direction = 'INBOUND_TELCO'
+          AND c.dl_last_updated BETWEEN DATE '{since}' AND DATE '{until}'
+          AND f.dl_last_updated >= DATE '2025-01-01'
+          AND f.task_status = 'completed'
+          AND f.cst_entity IN ('{entities_sql}')
+          AND f.out_key_problem_desc IS NOT NULL
+          AND f.out_key_problem_desc NOT IN ('Others', 'NA', 'None', '')
+          AND f.out_key_problem_sub_desc IS NOT NULL
+          AND f.out_key_problem_sub_desc NOT IN ('Others', 'NA', 'None', '')
+        LIMIT 2000
+    """)
+    comment_rows = cur.fetchall()
+
+    # ── Aggregate ─────────────────────────────────────────────────────────────
+    l1_data: Dict[str, Dict] = defaultdict(lambda: {"total": 0, "tone_counts": defaultdict(int)})
+    for l1, tone, cnt in issue_tone_rows:
+        l1_data[l1]["total"] += cnt
+        l1_data[l1]["tone_counts"][tone or "neutral"] += cnt
+
+    comments_by_l1: Dict[str, List] = defaultdict(list)
+    for l1, comment, ticket_id, tone, start_time, duration in comment_rows:
+        if l1 and comment and len(comments_by_l1[l1]) < 10:
+            date_str = str(start_time)[:16] if start_time else None
+            comments_by_l1[l1].append((comment, ticket_id, tone, _detect_lang(comment), date_str, [], int(duration or 0)))
+
+    sorted_l1 = sorted(l1_data.items(), key=lambda x: x[1]["total"], reverse=True)
+    issue_total = sum(d["total"] for _, d in sorted_l1)
+
+    # Sentiment totals
+    all_tones: Dict[str, int] = defaultdict(int)
+    for _, data in sorted_l1:
+        for t, c in data["tone_counts"].items():
+            all_tones[t] += c
+    pos = sum(c for t, c in all_tones.items() if TONE_SCORE.get(t, 0.0) > 0)
+    neg = sum(c for t, c in all_tones.items() if TONE_SCORE.get(t, 0.0) < 0)
+    neu = sum(c for t, c in all_tones.items() if TONE_SCORE.get(t, 0.0) == 0)
+
+    top_issues = []
+    for l1, data in sorted_l1[:15]:
+        l1_total = data["total"]
+        tone_counts = data["tone_counts"]
+        weighted_sum = sum(TONE_SCORE.get(t, 0.0) * c for t, c in tone_counts.items())
+        avg_score = weighted_sum / l1_total if l1_total else 0.0
+        issue_comments = comments_by_l1.get(l1, [])
+        top_issues.append({
+            "label":                  l1,
+            "count":                  l1_total,
+            "percentage":             round(l1_total / issue_total * 100, 1) if issue_total else 0.0,
+            "avg_sentiment":          round(avg_score, 2),
+            "sentiment_label":        _score_to_label(avg_score),
+            "example_comments":       [c[0] for c in issue_comments],
+            "comment_ticket_ids":     [c[1] for c in issue_comments],
+            "comment_tones":          [c[2] for c in issue_comments],
+            "comment_langs":          [c[3] for c in issue_comments],
+            "comment_dates":          [c[4] for c in issue_comments],
+            "comment_ratings":        [None for _ in issue_comments],
+            "comment_function_calls": [c[5] for c in issue_comments],
+            "comment_durations":      [c[6] for c in issue_comments],
+            "channels":               {"ivr_inbound": l1_total},
+        })
+
+    return {
+        "total_feedback":         issue_total,
+        "channels_analysed":      ["ivr_inbound"],
+        "top_issues":             top_issues,
+        "sentiment_distribution": {"positive": pos, "neutral": neu, "negative": neg, "total": pos + neu + neg},
+        "trending_issues":        [i["label"] for i in top_issues[:3]],
+        "ai_summary":             f"AI IVR inbound analysis ({since} → {until})",
+        "generated_at":           datetime.utcnow().isoformat(),
+        "data_from":              since,
+        "data_until":             until,
+    }

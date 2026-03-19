@@ -153,7 +153,9 @@ def _connect():
 
 def _resolve_date_range(max_date, date_range: str):
     """
-    Convert a date_range slug into (since, until) strings anchored to max_date.
+    Convert a date_range slug into (since, until) strings anchored to max_date
+    (the latest available date in the table). This ensures we always return data
+    even when the pipeline is behind by days or months.
     Both bounds are inclusive.
     """
     if date_range == "yesterday":
@@ -183,7 +185,7 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
     conn = _connect()
     cur = conn.cursor()
 
-    # Anchor to the latest available date in the table (not today)
+    # Find the latest available date so all ranges are anchored to real data
     cur.execute(f"""
         SELECT MAX(dl_last_updated)
         FROM {TABLE}
@@ -192,7 +194,7 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
     """)
     max_date = cur.fetchone()[0]
     if max_date is None:
-        raise ValueError(f"No data found for entity '{cst_entity}'. The CST entity may be incorrect or have no records.")
+        raise ValueError(f"No data found for entity '{cst_entity}'.")
 
     since, until = _resolve_date_range(max_date, date_range)
     date_filter = f"dl_last_updated BETWEEN DATE '{since}' AND DATE '{until}'"
@@ -344,6 +346,8 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
         "trending_issues": [i["label"] for i in top_issues[:3]],
         "ai_summary":      ai_summary,
         "generated_at":    datetime.utcnow().isoformat(),
+        "data_from":       since,
+        "data_until":      until,
     }
 
 
@@ -711,3 +715,70 @@ def fetch_eval(ticket_id: str, helpdesk_type: str = "merchant") -> Optional[Dict
         "went_wrong":  went_wrong,
         "raw_metrics": raw_metrics,
     }
+
+
+# ── Session lookup ─────────────────────────────────────────────────────────────
+
+def fetch_session_lookup(session_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Look up a single session by ticket_id across both merchant and customer schemas.
+    Returns a dict with summary fields, or None if not found.
+    """
+    conn = _connect()
+    cur = conn.cursor()
+
+    for helpdesk_type, schema in DB_SCHEMA.items():
+        table = f"hive.{schema}.feedback_complete_analyzed_data_snapshot_v3"
+        try:
+            cur.execute(f"""
+                SELECT ticket_id, cst_entity, out_key_problem_desc, out_key_problem_sub_desc,
+                       out_merchant_tone, dl_last_updated
+                FROM {table}
+                WHERE ticket_id = '{session_id}'
+                  AND dl_last_updated >= DATE '2025-01-01'
+                LIMIT 1
+            """)
+            row = cur.fetchone()
+            if row:
+                ticket_id, cst_entity, issue, summary, tone, date_val = row
+                date_str = date_val.isoformat() if hasattr(date_val, "isoformat") else str(date_val) if date_val else None
+                return {
+                    "session_id":    ticket_id,
+                    "cst_entity":    cst_entity,
+                    "issue":         issue,
+                    "summary":       summary,
+                    "tone":          (tone or "").lower(),
+                    "date":          date_str,
+                    "helpdesk_type": helpdesk_type,
+                }
+        except Exception:
+            continue
+
+    # Also check master data tables for sessions not in the main snapshot
+    for helpdesk_type, schema in DB_SCHEMA.items():
+        analytics_table = ANALYTICS_TABLE_TMPL.format(schema=schema)
+        try:
+            cur.execute(f"""
+                SELECT ticket_id, cst_entity, intent, created_at
+                FROM {analytics_table}
+                WHERE ticket_id = '{session_id}'
+                  AND dl_last_updated >= DATE '2025-01-01'
+                LIMIT 1
+            """)
+            row = cur.fetchone()
+            if row:
+                ticket_id, cst_entity, intent, created_at = row
+                date_str = created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at) if created_at else None
+                return {
+                    "session_id":    ticket_id,
+                    "cst_entity":    cst_entity,
+                    "issue":         intent,
+                    "summary":       None,
+                    "tone":          None,
+                    "date":          date_str,
+                    "helpdesk_type": helpdesk_type,
+                }
+        except Exception:
+            continue
+
+    return None

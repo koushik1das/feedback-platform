@@ -103,6 +103,9 @@ class InsightsResponse(BaseModel):
     session_id:                 Optional[str]  = None
     total_reviews_loaded:       Optional[int]  = None
     has_more:                   Optional[bool] = None
+    # Actual date window used (may differ from requested range if data is stale)
+    data_from:                  Optional[str]  = None   # "YYYY-MM-DD"
+    data_until:                 Optional[str]  = None   # "YYYY-MM-DD"
 
 
 # ── Request / Response models for the API ────────────────────────────────────

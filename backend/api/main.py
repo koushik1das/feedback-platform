@@ -5,11 +5,16 @@ Start with:
     uvicorn api.main:app --reload --port 8000
 """
 
+from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from api.routes import router
+from api.auth import auth_router
 
 app = FastAPI(
     title="Customer Feedback Intelligence Platform",
@@ -32,6 +37,7 @@ app.add_middleware(
 )
 
 app.include_router(router, prefix="/api")
+app.include_router(auth_router, prefix="/api")
 
 
 @app.get("/", tags=["health"])

@@ -7,6 +7,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
+import SessionTimeline from './SessionTimeline';
 
 const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
 
@@ -37,6 +38,104 @@ function fmt(iso) {
 
 function cleanBot(text) {
   return text.replace(/\n?\{"name":"proactive_issues_displayList"[\s\S]*?\}\s*\]/g, '').trim();
+}
+
+// ── Listen button (IVR / Soundbox / Outbound recording) ──────────────────────
+
+function ListenButton({ ticketId, createdAt, recordingPath }) {
+  const [playing,      setPlaying]      = useState(false);
+  const [audioError,   setAudioError]   = useState(false);
+  const [downloading,  setDownloading]  = useState(false);
+
+  if (!ticketId || !createdAt || !recordingPath) return null;
+
+  const dateOnly = createdAt.slice(0, 10);
+  const [yyyy, mm, dd] = dateOnly.split('-');
+  const dateFmt  = `${dd}-${mm}-${yyyy}`;
+  const gatewayUrl = recordingPath === 'ivr'
+    ? `https://cst-gateway-int.paytm.com/recording/${dateFmt}/${ticketId}.wav`
+    : `https://cst-gateway-int.paytm.com/recording/obd/${dateFmt}/${ticketId}.wav`;
+  const proxyUrl = `${API_BASE}/campaigns/recording?recording_url=${encodeURIComponent(gatewayUrl)}`;
+
+  async function handleDownload() {
+    setDownloading(true);
+    try {
+      const res  = await fetch(proxyUrl);
+      if (!res.ok) throw new Error('Not found');
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `${ticketId}.wav`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      alert('Recording not found or unavailable.');
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  // Shared Download button — always visible
+  const DownloadBtn = (
+    <button
+      onClick={handleDownload}
+      disabled={downloading}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 5,
+        background: '#eff6ff', color: '#2563eb', border: '1px solid #bfdbfe',
+        borderRadius: 20, padding: '4px 12px', cursor: downloading ? 'wait' : 'pointer',
+        fontSize: '.75rem', fontWeight: 600, opacity: downloading ? .6 : 1,
+      }}
+    >
+      {downloading ? '…' : '↓ Download'}
+    </button>
+  );
+
+  if (audioError) return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ fontSize: '.72rem', color: '#ef4444' }}>⚠️ Not found</span>
+      {DownloadBtn}
+    </div>
+  );
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      {/* Audio player (shown when playing, else Listen button) */}
+      {playing ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <audio
+            src={proxyUrl}
+            controls
+            autoPlay
+            style={{ height: 28, width: 200 }}
+            onEnded={() => setPlaying(false)}
+            onError={() => { setPlaying(false); setAudioError(true); }}
+          />
+          <button
+            onClick={() => setPlaying(false)}
+            style={{ background: 'none', border: 'none', cursor: 'pointer',
+              fontSize: '.75rem', color: '#94a3b8' }}
+          >✕</button>
+        </div>
+      ) : (
+        <button
+          onClick={() => { setPlaying(true); setAudioError(false); }}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 5,
+            background: '#f0fdf4', color: '#16a34a', border: '1px solid #bbf7d0',
+            borderRadius: 20, padding: '4px 12px', cursor: 'pointer',
+            fontSize: '.75rem', fontWeight: 600,
+          }}
+        >
+          ▶ Listen
+        </button>
+      )}
+      {DownloadBtn}
+    </div>
+  );
 }
 
 function Spinner({ size = 24, color = '#6366f1' }) {
@@ -474,7 +573,7 @@ function FunctionCallsSection({ calls, loading, error }) {
   );
 }
 
-export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', showEval = true, onClose }) {
+export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', showEval = true, recordingPath = null, onClose }) {
   const [messages,    setMessages]    = useState([]);
   const [masterData,  setMasterData]  = useState(null);
   const [evalData,    setEvalData]    = useState(null);
@@ -487,6 +586,7 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
   const [mdError,     setMdError]     = useState(null);
   const [evalError,   setEvalError]   = useState(null);
   const [fnError,     setFnError]     = useState(null);
+  const [rightTab,    setRightTab]    = useState('data');   // 'data' | 'timeline'
   const bodyRef = useRef(null);
 
   useEffect(() => {
@@ -552,34 +652,24 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
           <div style={{ display:'flex', alignItems:'center', gap:'.75rem' }}>
             <span style={{ fontSize:'1.1rem' }}>💬</span>
             <div>
+              {/* Title: show intent tag if available, else fallback to "Ticket Detail" */}
               <div style={{ fontWeight:700, fontSize:'.95rem', color:'#0f172a' }}>
-                Ticket Detail
+                {masterData?.intent || 'Ticket Detail'}
               </div>
-              <div style={{ fontSize:'.68rem', color:'#94a3b8', fontFamily:'monospace' }}>
-                {ticketId}
+              <div style={{ display:'flex', alignItems:'center', gap:'.6rem' }}>
+                <span style={{ fontSize:'.68rem', color:'#94a3b8', fontFamily:'monospace' }}>
+                  {ticketId}
+                </span>
+                {messages.length > 0 && messages[0].created_at && (
+                  <span style={{ fontSize:'.68rem', color:'#64748b' }}>
+                    · {new Date(messages[0].created_at).toLocaleString([], {
+                        day:'2-digit', month:'short', year:'numeric',
+                        hour:'2-digit', minute:'2-digit', hour12:false,
+                      })}
+                  </span>
+                )}
               </div>
             </div>
-            {masterData && (
-              <div style={{ display:'flex', gap:'.4rem', flexWrap:'wrap' }}>
-                {masterData.cst_entity && (
-                  <span style={{ fontSize:'.72rem', fontWeight:600, background:'#e0e7ff',
-                    color:'#4f46e5', borderRadius:20, padding:'2px 10px' }}>
-                    {masterData.cst_entity}
-                  </span>
-                )}
-                {masterData.intent && (
-                  <span style={{ fontSize:'.72rem', fontWeight:600, background:'#d1fae5',
-                    color:'#065f46', borderRadius:20, padding:'2px 10px' }}>
-                    {masterData.intent}
-                  </span>
-                )}
-                {masterData.customer_id && (
-                  <span style={{ fontSize:'.72rem', color:'#64748b', padding:'2px 0' }}>
-                    Customer: {masterData.customer_id}
-                  </span>
-                )}
-              </div>
-            )}
           </div>
           <button
             onClick={onClose}
@@ -598,16 +688,24 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
             display:'flex', flexDirection:'column', overflow:'hidden',
           }}>
             <div style={{ padding:'.6rem 1rem', borderBottom:'1px solid #f1f5f9',
-              background:'#f8fafc', flexShrink:0 }}>
-              <span style={{ fontSize:'.78rem', fontWeight:700, color:'#64748b',
-                textTransform:'uppercase', letterSpacing:'.06em' }}>
-                💬 Chat Transcript
-              </span>
-              {!txLoading && (
-                <span style={{ fontSize:'.72rem', color:'#94a3b8', marginLeft:'.5rem' }}>
-                  {visible.length} messages
+              background:'#f8fafc', flexShrink:0,
+              display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+              <div>
+                <span style={{ fontSize:'.78rem', fontWeight:700, color:'#64748b',
+                  textTransform:'uppercase', letterSpacing:'.06em' }}>
+                  💬 Chat Transcript
                 </span>
-              )}
+                {!txLoading && (
+                  <span style={{ fontSize:'.72rem', color:'#94a3b8', marginLeft:'.5rem' }}>
+                    {visible.length} messages
+                  </span>
+                )}
+              </div>
+              <ListenButton
+                ticketId={ticketId}
+                createdAt={messages.length > 0 ? messages[0].created_at : null}
+                recordingPath={recordingPath}
+              />
             </div>
 
             <div ref={bodyRef}
@@ -685,70 +783,104 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
             </div>
           </div>
 
-          {/* ── RIGHT: Eval + Master Data ── */}
+          {/* ── RIGHT: Tabs (Eval/Data | Debug Timeline) ── */}
           <div style={{ width:'50%', display:'flex', flexDirection:'column', overflow:'hidden' }}>
 
-            {showEval && (
-              <div style={{ padding:'.6rem 1rem', borderBottom:'1px solid #f1f5f9',
-                background:'#f8fafc', flexShrink:0 }}>
-                <span style={{ fontSize:'.78rem', fontWeight:700, color:'#64748b',
-                  textTransform:'uppercase', letterSpacing:'.06em' }}>
-                  📊 Eval Analysis
-                </span>
+            {/* Tab bar */}
+            <div style={{ display:'flex', borderBottom:'1px solid #e2e8f0', background:'#f8fafc', flexShrink:0 }}>
+              {[
+                { id:'data',     label:'📊 Eval & Data'      },
+                { id:'timeline', label:'🤖 Debug Bot'   },
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setRightTab(tab.id)}
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    padding: '.5rem 1rem', fontSize: '.75rem', fontWeight: 700,
+                    color: rightTab === tab.id ? '#1d4ed8' : '#64748b',
+                    borderBottom: rightTab === tab.id ? '2px solid #1d4ed8' : '2px solid transparent',
+                    transition: 'color .15s',
+                  }}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Tab: Eval & Data */}
+            {rightTab === 'data' && (
+              <div style={{ flex:1, overflowY:'auto' }}>
+                {/* Eval card */}
+                {showEval && <EvalSection evalData={evalData} loading={evalLoading} error={evalError} />}
+
+                {/* Function Calls header */}
+                <div style={{ padding:'.6rem 1rem', borderBottom:'1px solid #f1f5f9',
+                  background:'#f8fafc', flexShrink:0 }}>
+                  <span style={{ fontSize:'.78rem', fontWeight:700, color:'#64748b',
+                    textTransform:'uppercase', letterSpacing:'.06em' }}>
+                    ⚙️ Function Calls &amp; Transcript
+                  </span>
+                  {!fnLoading && fnCalls.length > 0 && (
+                    <span style={{ fontSize:'.72rem', color:'#94a3b8', marginLeft:'.5rem' }}>
+                      {fnCalls.length} rows
+                    </span>
+                  )}
+                </div>
+                <FunctionCallsSection calls={fnCalls} loading={fnLoading} error={fnError} />
+
+                {/* Master data header */}
+                <div style={{ padding:'.6rem 1rem', borderBottom:'1px solid #f1f5f9',
+                  background:'#f8fafc', flexShrink:0 }}>
+                  <span style={{ fontSize:'.78rem', fontWeight:700, color:'#64748b',
+                    textTransform:'uppercase', letterSpacing:'.06em' }}>
+                    🗂️ Master Data
+                  </span>
+                  {!mdLoading && masterData && (
+                    <span style={{ fontSize:'.72rem', color:'#94a3b8', marginLeft:'.5rem' }}>
+                      {masterData.sections.length} sections · click to expand
+                    </span>
+                  )}
+                </div>
+
+                {mdLoading && (
+                  <div style={{ display:'flex', flexDirection:'column', alignItems:'center',
+                    justifyContent:'center', padding:'2rem', gap:'.75rem', color:'#94a3b8' }}>
+                    <Spinner /><span style={{ fontSize:'.85rem' }}>Loading master data…</span>
+                  </div>
+                )}
+
+                {mdError && (
+                  <div style={{ margin:'1rem', background:'#fef2f2', border:'1px solid #fca5a5',
+                    borderRadius:8, padding:'.75rem', color:'#dc2626', fontSize:'.85rem' }}>
+                    {mdError}
+                  </div>
+                )}
+
+                {!mdLoading && !mdError && masterData?.sections?.map(section => (
+                  <AccordionSection key={section.key} section={section} />
+                ))}
               </div>
             )}
 
-            <div style={{ flex:1, overflowY:'auto' }}>
-              {/* Eval card */}
-              {showEval && <EvalSection evalData={evalData} loading={evalLoading} error={evalError} />}
-
-              {/* Function Calls header */}
-              <div style={{ padding:'.6rem 1rem', borderBottom:'1px solid #f1f5f9',
-                background:'#f8fafc', flexShrink:0 }}>
-                <span style={{ fontSize:'.78rem', fontWeight:700, color:'#64748b',
-                  textTransform:'uppercase', letterSpacing:'.06em' }}>
-                  ⚙️ Function Calls &amp; Transcript
-                </span>
-                {!fnLoading && fnCalls.length > 0 && (
-                  <span style={{ fontSize:'.72rem', color:'#94a3b8', marginLeft:'.5rem' }}>
-                    {fnCalls.length} rows
-                  </span>
-                )}
+            {/* Tab: Debug Timeline */}
+            {rightTab === 'timeline' && (
+              <div style={{ flex:1, overflowY:'auto' }}>
+                <SessionTimeline
+                  sessionId={ticketId}
+                  sessionDatetime={
+                    messages.length > 0 && messages[0].created_at
+                      ? (() => {
+                          // created_at is UTC (no 'Z' suffix in DB) — convert to IST (+5:30)
+                          const utcMs = new Date(messages[0].created_at + 'Z').getTime();
+                          const istDate = new Date(utcMs + 5.5 * 60 * 60 * 1000);
+                          return istDate.toISOString().slice(0, 19); // "YYYY-MM-DDTHH:MM:SS" in IST
+                        })()
+                      : undefined
+                  }
+                />
               </div>
-              <FunctionCallsSection calls={fnCalls} loading={fnLoading} error={fnError} />
-
-              {/* Master data header */}
-              <div style={{ padding:'.6rem 1rem', borderBottom:'1px solid #f1f5f9',
-                background:'#f8fafc', flexShrink:0 }}>
-                <span style={{ fontSize:'.78rem', fontWeight:700, color:'#64748b',
-                  textTransform:'uppercase', letterSpacing:'.06em' }}>
-                  🗂️ Master Data
-                </span>
-                {!mdLoading && masterData && (
-                  <span style={{ fontSize:'.72rem', color:'#94a3b8', marginLeft:'.5rem' }}>
-                    {masterData.sections.length} sections · click to expand
-                  </span>
-                )}
-              </div>
-
-              {mdLoading && (
-                <div style={{ display:'flex', flexDirection:'column', alignItems:'center',
-                  justifyContent:'center', padding:'2rem', gap:'.75rem', color:'#94a3b8' }}>
-                  <Spinner /><span style={{ fontSize:'.85rem' }}>Loading master data…</span>
-                </div>
-              )}
-
-              {mdError && (
-                <div style={{ margin:'1rem', background:'#fef2f2', border:'1px solid #fca5a5',
-                  borderRadius:8, padding:'.75rem', color:'#dc2626', fontSize:'.85rem' }}>
-                  {mdError}
-                </div>
-              )}
-
-              {!mdLoading && !mdError && masterData?.sections?.map(section => (
-                <AccordionSection key={section.key} section={section} />
-              ))}
-            </div>
+            )}
           </div>
 
         </div>

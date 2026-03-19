@@ -200,6 +200,7 @@ function SessionTable({ sessions }) {
           ticketId={sessionModal}
           helpdeskType="merchant"
           showEval={false}
+          recordingPath="obd"
           onClose={() => setSessionModal(null)}
         />
       )}
