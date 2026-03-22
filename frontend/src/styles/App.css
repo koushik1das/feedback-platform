@@ -1,8 +1,8 @@
 /* ── CSS Variables ───────────────────────────────────────────── */
 :root {
-  --primary:      #6366f1;
-  --primary-dark: #4f46e5;
-  --primary-light:#e0e7ff;
+  --primary:      #2563eb;
+  --primary-dark: #1d4ed8;
+  --primary-light:#eff6ff;
   --success:      #10b981;
   --warning:      #f59e0b;
   --danger:       #ef4444;
@@ -250,7 +250,7 @@ body {
 
 /* ── AI Summary Banner ───────────────────────────────────────── */
 .ai-banner {
-  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  background: linear-gradient(135deg, #2563eb 0%, #3b82f6 100%);
   border-radius: var(--radius);
   padding: 1.25rem 1.5rem;
   color: #fff;
@@ -292,7 +292,7 @@ body {
   color: var(--text-secondary);
 }
 .issue-rank.rank-1 { background: #fef9c3; color: #ca8a04; }
-.issue-rank.rank-2 { background: #e0e7ff; color: var(--primary-dark); }
+.issue-rank.rank-2 { background: #dbeafe; color: var(--primary-dark); }
 .issue-rank.rank-3 { background: #fce7f3; color: #be185d; }
 .issue-info { flex: 1; min-width: 0; }
 .issue-label { font-weight: 600; font-size: .9rem; }

@@ -17,11 +17,11 @@ const TYPE_STYLE = {
   session_end:     { dot: '#6b7280', badge: '#f1f5f9', text: '#374151', label: 'Session End'   },
   workflow:        { dot: '#3b82f6', badge: '#dbeafe', text: '#1e40af', label: 'Workflow'       },
   master_data:     { dot: '#3b82f6', badge: '#dbeafe', text: '#1e40af', label: 'Master Data'   },
-  transformer:     { dot: '#8b5cf6', badge: '#ede9fe', text: '#5b21b6', label: 'Transformer'   },
-  intent:          { dot: '#7c3aed', badge: '#ede9fe', text: '#4c1d95', label: 'Intent'        },
+  transformer:     { dot: '#3b82f6', badge: '#dbeafe', text: '#1e40af', label: 'Transformer'   },
+  intent:          { dot: '#1d4ed8', badge: '#dbeafe', text: '#1e3a8a', label: 'Intent'        },
   user_message:    { dot: '#0ea5e9', badge: '#e0f2fe', text: '#0369a1', label: 'User Message'  },
-  bot_response:    { dot: '#6366f1', badge: '#e0e7ff', text: '#3730a3', label: 'Bot Response'  },
-  greeting:        { dot: '#6366f1', badge: '#e0e7ff', text: '#3730a3', label: 'Greeting'      },
+  bot_response:    { dot: '#2563eb', badge: '#dbeafe', text: '#1e40af', label: 'Bot Response'  },
+  greeting:        { dot: '#2563eb', badge: '#dbeafe', text: '#1e40af', label: 'Greeting'      },
   function_call:   { dot: '#f59e0b', badge: '#fef3c7', text: '#92400e', label: 'Function Call' },
   function_result: { dot: '#d97706', badge: '#fef9c3', text: '#78350f', label: 'FC Result'     },
   handoff:         { dot: '#ef4444', badge: '#fee2e2', text: '#991b1b', label: 'Handoff'       },
@@ -166,9 +166,9 @@ function EventNode({ event, isLast }) {
 const PHASE_COLOR = {
   Session:       '#10b981',
   Workflow:      '#3b82f6',
-  NLU:           '#8b5cf6',
+  NLU:           '#3b82f6',
   User:          '#0ea5e9',
-  Bot:           '#6366f1',
+  Bot:           '#2563eb',
   'Function Call': '#f59e0b',
   Escalation:    '#ef4444',
   Error:         '#ef4444',
@@ -230,7 +230,7 @@ function SummaryBar({ events }) {
       background: '#f8fafc', borderBottom: '1px solid #e2e8f0', fontSize: '.72rem',
     }}>
       <Chip label="Events"    value={total}    color="#3b82f6" />
-      {maxMs != null && <Chip label="Duration" value={fmtOffset(maxMs)} color="#6366f1" />}
+      {maxMs != null && <Chip label="Duration" value={fmtOffset(maxMs)} color="#2563eb" />}
       {fnCalls  > 0 && <Chip label="API calls"  value={fnCalls}  color="#f59e0b" />}
       {warnings > 0 && <Chip label="Warnings"  value={warnings} color="#f59e0b" />}
       {errors   > 0 && <Chip label="Errors"    value={errors}   color="#ef4444" />}
@@ -412,10 +412,22 @@ function LogQueryBot({ sessionId, events, logsLoading }) {
         {/* Loading state: logs still being fetched */}
         {logsLoading && !messages.length && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center',
-            justifyContent: 'center', padding: '3rem', gap: '1rem', color: '#94a3b8' }}>
-            <div style={{ width: 28, height: 28, border: '3px solid #e2e8f0',
-              borderTopColor: '#3b82f6', borderRadius: '50%', animation: 'spin .7s linear infinite' }} />
-            <span style={{ fontSize: '.85rem' }}>Fetching session logs…</span>
+            justifyContent: 'center', padding: '3rem', gap: '1.2rem', color: '#94a3b8' }}>
+            {/* Progress bar — reaches 50% at 100s (half the 200s timeout) */}
+            <div style={{ width: '60%', maxWidth: 320, background: '#e2e8f0', borderRadius: 99, height: 6, overflow: 'hidden', position: 'relative' }}>
+              <div style={{
+                height: '100%', borderRadius: 99, background: '#3b82f6',
+                animation: 'barProgress 200s linear forwards',
+                position: 'relative', overflow: 'hidden',
+              }}>
+                <div style={{
+                  position: 'absolute', top: 0, left: 0, height: '100%', width: '30%',
+                  background: 'linear-gradient(90deg, transparent, rgba(255,255,255,.5), transparent)',
+                  animation: 'shimmer 1.8s ease-in-out infinite',
+                }} />
+              </div>
+            </div>
+            <span style={{ fontSize: '.82rem' }}>Fetching session logs…</span>
           </div>
         )}
 
@@ -426,7 +438,7 @@ function LogQueryBot({ sessionId, events, logsLoading }) {
           }}>
             {m.role === 'bot' && (
               <div style={{
-                width: 26, height: 26, borderRadius: '50%', background: '#ede9fe',
+                width: 26, height: 26, borderRadius: '50%', background: '#dbeafe',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: '.8rem', flexShrink: 0, marginRight: 6, alignSelf: 'flex-end',
               }}>🤖</div>
@@ -451,7 +463,7 @@ function LogQueryBot({ sessionId, events, logsLoading }) {
         {asking && (
           <div style={{ display: 'flex', alignItems: 'flex-end', gap: 6 }}>
             <div style={{
-              width: 26, height: 26, borderRadius: '50%', background: '#ede9fe',
+              width: 26, height: 26, borderRadius: '50%', background: '#dbeafe',
               display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '.8rem',
             }}>🤖</div>
             <div style={{
@@ -512,21 +524,47 @@ function LogQueryBot({ sessionId, events, logsLoading }) {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function SessionTimeline({ sessionId, startTime, endTime, sessionDatetime, helpdeskType }) {
-  const [events,   setEvents]   = useState([]);
-  const [loading,  setLoading]  = useState(true);
-  const [error,    setError]    = useState(null);
-  const [datetime, setDatetime] = useState(nowIST());
-  // Track whether user has manually changed the picker
-  const userEditedRef = React.useRef(false);
+  const [events,          setEvents]          = useState([]);
+  const [loading,         setLoading]         = useState(true);
+  const [error,           setError]           = useState(null);
+  const [datetime,        setDatetime]        = useState(nowIST());
+  const [retryCountdown,  setRetryCountdown]  = useState(null); // null = no auto-retry pending
+  const userEditedRef  = React.useRef(false);
+  const retryTimerRef  = React.useRef(null);
+
+  // Auto-retry: when an error appears, start 5s countdown then retry once
+  useEffect(() => {
+    if (!error || events.length > 0) {
+      setRetryCountdown(null);
+      return;
+    }
+    setRetryCountdown(5);
+  }, [error]);
+
+  useEffect(() => {
+    if (retryCountdown === null) return;
+    if (retryCountdown === 0) {
+      handleSearch();
+      setRetryCountdown(null);
+      return;
+    }
+    retryTimerRef.current = setTimeout(() => setRetryCountdown(c => c - 1), 1000);
+    return () => clearTimeout(retryTimerRef.current);
+  }, [retryCountdown]);
+
+  function cancelAutoRetry() {
+    clearTimeout(retryTimerRef.current);
+    setRetryCountdown(null);
+  }
 
   function buildWindow(dt) {
     // dt is an IST datetime string "YYYY-MM-DDTHH:MM" or "YYYY-MM-DDTHH:MM:SS".
-    // Loki MCP expects IST. Append 'Z' so Date treats the IST value as-is
-    // (no timezone shift), then toISOString() gives back IST strings.
+    // Append 'Z' so JS treats the IST value as-is (no tz shift), then ±2h
+    // and toISOString() produces IST strings for Loki.
     if (!dt) return { start_time: null, end_time: null };
-    const base    = new Date(dt + 'Z');
-    const minus2h = new Date(base.getTime() - 2 * 3600 * 1000);
-    const plus2h  = new Date(base.getTime() + 2 * 3600 * 1000);
+    const base    = new Date(dt + 'Z').getTime();
+    const minus2h = new Date(base - 2 * 3600 * 1000);
+    const plus2h  = new Date(base + 2 * 3600 * 1000);
     return {
       start_time: minus2h.toISOString().slice(0, 19),
       end_time:   plus2h.toISOString().slice(0, 19),
@@ -547,7 +585,7 @@ export default function SessionTimeline({ sessionId, startTime, endTime, session
     if (helpdeskType) params.set('helpdesk_type', helpdeskType);
     const qs = params.toString() ? `?${params}` : '';
 
-    axios.get(`${API_BASE}/helpdesk/session-timeline/${sessionId}${qs}`)
+    axios.get(`${API_BASE}/helpdesk/session-timeline/${sessionId}${qs}`, { timeout: 200000 })
       .then(res => setEvents(res.data || []))
       .catch(e  => setError(e.response?.data?.detail || 'Failed to load session timeline.'))
       .finally(() => setLoading(false));
@@ -571,6 +609,7 @@ export default function SessionTimeline({ sessionId, startTime, endTime, session
   }
 
   function handleSearch() {
+    cancelAutoRetry();
     const { start_time, end_time } = buildWindow(datetime);
     fetchTimeline(start_time, end_time);
   }
@@ -578,12 +617,23 @@ export default function SessionTimeline({ sessionId, startTime, endTime, session
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <style>{`
-        @keyframes spin   { to { transform: rotate(360deg); } }
-        @keyframes bounce { 0%,80%,100% { transform: translateY(0); } 40% { transform: translateY(-5px); } }
+        @keyframes spin        { to { transform: rotate(360deg); } }
+        @keyframes bounce      { 0%,80%,100% { transform: translateY(0); } 40% { transform: translateY(-5px); } }
+        @keyframes barProgress {
+          0%   { width: 0% }
+          5%   { width: 50% }
+          10%  { width: 75% }
+          15%  { width: 87.5% }
+          20%  { width: 93.75% }
+          25%  { width: 96.875% }
+          30%  { width: 98.4% }
+          100% { width: 99% }
+        }
+        @keyframes shimmer     { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
       `}</style>
 
-      {/* Error banner */}
-      {error && (
+      {/* Error banner — only show if no events loaded (avoids stale error from previous fetch) */}
+      {error && events.length === 0 && (
         <div style={{
           margin: '8px 14px 0', background: '#fef2f2', border: '1px solid #fca5a5',
           borderRadius: 8, padding: '8px 12px', color: '#dc2626', fontSize: '.78rem',
@@ -593,21 +643,32 @@ export default function SessionTimeline({ sessionId, startTime, endTime, session
             {error.includes('504') || error.includes('timeout') || error.includes('Gateway') || error.includes('timed out')
               ? <><strong>Loki MCP timed out.</strong> The log server is slow — please try again.</>
               : error.includes('not found') || error.includes('No traceId')
-                ? <><strong>No logs found</strong> for this session. It may not have gone through the AI bot.</>
+                ? <><strong>No logs found</strong> for this session. It may not have gone through the AI bot.<br/><span style={{fontSize:'.73rem',color:'#b91c1c',opacity:.8}}>{error}</span></>
                 : <><strong>Error:</strong> {error}</>
             }
           </span>
-          {(error.includes('504') || error.includes('timeout') || error.includes('Gateway') || error.includes('timed out')) && (
-            <button
-              onClick={handleSearch}
-              style={{
-                flexShrink: 0, fontSize: '.75rem', fontWeight: 700,
+          {(
+            error.includes('504') || error.includes('timeout') || error.includes('Gateway') ||
+            error.includes('timed out') || error.includes('not found') || error.includes('No traceId')
+          ) && (
+            <div style={{ display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' }}>
+              {retryCountdown !== null && (
+                <button onClick={cancelAutoRetry} style={{
+                  fontSize: '.72rem', fontWeight: 600, background: 'transparent',
+                  color: '#dc2626', border: '1px solid #fca5a5',
+                  borderRadius: 6, padding: '3px 10px', cursor: 'pointer',
+                }}>
+                  Cancel ({retryCountdown}s)
+                </button>
+              )}
+              <button onClick={handleSearch} style={{
+                fontSize: '.75rem', fontWeight: 700,
                 background: '#dc2626', color: '#fff', border: 'none',
                 borderRadius: 6, padding: '4px 12px', cursor: 'pointer',
-              }}
-            >
-              ↻ Retry
-            </button>
+              }}>
+                ↻ Retry
+              </button>
+            </div>
           )}
         </div>
       )}

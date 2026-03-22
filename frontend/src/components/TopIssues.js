@@ -11,7 +11,7 @@ import {
 } from 'recharts';
 
 const COLORS = [
-  '#6366f1', '#8b5cf6', '#ec4899',
+  '#2563eb', '#3b82f6', '#ec4899',
   '#f59e0b', '#10b981', '#3b82f6', '#ef4444',
 ];
 
@@ -44,7 +44,7 @@ export default function TopIssues({ issues }) {
   return (
     <div className="card" style={{ height: '100%' }}>
       <div className="card-title">
-        <span className="card-title-icon" style={{ background: '#e0e7ff' }}>📊</span>
+        <span className="card-title-icon" style={{ background: '#dbeafe' }}>📊</span>
         Top Issues by Frequency
       </div>
 
@@ -63,7 +63,7 @@ export default function TopIssues({ issues }) {
               dataKey="percentage"
               position="right"
               formatter={(v) => `${v}%`}
-              style={{ fontSize: 11, fontWeight: 600, fill: '#6366f1' }}
+              style={{ fontSize: 11, fontWeight: 600, fill: '#2563eb' }}
             />
             {chartData.map((_, i) => (
               <Cell key={i} fill={COLORS[i % COLORS.length]} />

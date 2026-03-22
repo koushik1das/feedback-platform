@@ -32,10 +32,12 @@ def _mcp_call(tool_name: str, arguments: Dict[str, Any], helpdesk_type: str = "m
         "id": 1,
     }
     try:
-        resp = requests.post(url, json=payload, timeout=90)
+        resp = requests.post(url, json=payload, timeout=180)
         resp.raise_for_status()
     except requests.exceptions.Timeout:
         raise ValueError("Loki MCP timed out. The log server is slow — please try again.")
+    except requests.exceptions.ConnectionError as e:
+        raise ValueError(f"Loki MCP server error: {e}")
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code in (502, 503, 504):
             raise ValueError(f"Loki MCP gateway error ({e.response.status_code}). Please try again.")
@@ -170,6 +172,13 @@ def _extract_log_lines(result: Any) -> List[str]:
         return lines
 
     if isinstance(result, dict):
+        # Check for server-side traceback (error may be empty string but traceback present)
+        tb = result.get("traceback", "")
+        if tb and "Traceback" in tb:
+            lines = tb.splitlines()
+            last = next((l.strip() for l in reversed(lines) if l.strip()), "")
+            raise ValueError(f"Loki MCP server error: {last}")
+
         # Check for "not found" status
         status = result.get("status", "")
         if status in ("not_found", "error"):
@@ -349,22 +358,26 @@ def _session_date_from_trino(session_id: str, helpdesk_type: Optional[str] = Non
             try:
                 cur.execute(f"""
                     SELECT created_at
-                    FROM hive.{schema}.cst_conversation
-                    WHERE session_id = '{session_id}'
+                    FROM hive.{schema}.support_ticket_details_snapshot_v3
+                    WHERE id = '{session_id}'
+                      AND dl_last_updated >= DATE '2025-01-01'
                     LIMIT 1
                 """)
                 row = cur.fetchone()
                 if row and row[0]:
-                    utc_dt = row[0] if isinstance(row[0], datetime) else datetime.fromisoformat(str(row[0]))
-                    ist_dt = utc_dt + timedelta(hours=5, minutes=30)
-                    start = ist_dt - timedelta(hours=1)
-                    end   = ist_dt + timedelta(hours=1)
+                    raw = row[0]
+                    # support_ticket_details_snapshot_v3 stores created_at in IST already
+                    ist_dt = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw)[:19])
+                    start = ist_dt - timedelta(hours=2)
+                    end   = ist_dt + timedelta(hours=2)
+                    print(f"DEBUG _session_date_from_trino: session={session_id} ist={ist_dt} window={start} to {end}")
                     return (
                         f"{start.strftime('%Y-%m-%d')}T{start.strftime('%H:%M:%S')}",
                         f"{end.strftime('%Y-%m-%d')}T{end.strftime('%H:%M:%S')}",
                         htype,
                     )
-            except Exception:
+            except Exception as e:
+                print(f"DEBUG _session_date_from_trino [{schema}] error: {e}")
                 continue
     except Exception:
         pass
@@ -381,9 +394,17 @@ def _fetch_from_loki(
     Core Loki fetch: AggregateFailureDebug → traceId → AnalyzePlugWorkflow.
     Raises ValueError if session not found or no log lines returned.
     """
-    date_part = start_time[:10]
+    # start_time/end_time are already IST strings from the frontend.
+    # Loki requires start_hms < end_hms (no cross-midnight).
+    # If the window crosses midnight, use end_time's date and clamp start to 00:00.
     start_hms = start_time[11:19]
     end_hms   = end_time[11:19]
+    if start_hms > end_hms:
+        # Window crosses midnight — session is in early hours of end_time's date
+        date_part = end_time[:10]
+        start_hms = "00:00:00"
+    else:
+        date_part = start_time[:10]
 
     # Step 1: get traceId
     agg_result = _mcp_call(
@@ -464,6 +485,59 @@ def _fetch_from_loki(
     return _build_timeline(events)
 
 
+def _fetch_from_opensip(
+    session_id: str,
+    date_part:  str,
+    start_hms:  str,
+    end_hms:    str,
+) -> List[Dict[str, Any]]:
+    """
+    Search OpenSIP logs (merchant endpoint only) for AI IVR / outbound sessions.
+    Raises ValueError if nothing found.
+    """
+    result = _mcp_call(
+        "SearchOpenSipLogs",
+        {
+            "term":       session_id,
+            "date":       date_part,
+            "start_time": start_hms,
+            "end_time":   end_hms,
+            "limit":      200,
+        },
+        helpdesk_type="merchant",
+    )
+
+    data = _unwrap_mcp_content(result)
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    raw_lines: List[str] = []
+
+    if isinstance(data, dict):
+        lines = data.get("lines") or data.get("raw_log_lines") or []
+        for item in lines:
+            if isinstance(item, dict):
+                raw_lines.append(item.get("log") or json.dumps(item))
+            elif isinstance(item, str):
+                raw_lines.append(item)
+        if not raw_lines and data.get("narrative"):
+            for line in data["narrative"].splitlines():
+                line = re.sub(r'^\[\d+\]\s*', '', line).strip()
+                if line:
+                    raw_lines.append(line)
+    elif isinstance(data, list):
+        raw_lines = _extract_log_lines(data)
+
+    if not raw_lines:
+        raise ValueError("No OpenSIP logs found for this session.")
+
+    events = [_classify_line(line) for line in raw_lines if line.strip()]
+    return _build_timeline(events)
+
+
 def fetch_session_timeline(
     session_id:    str,
     start_time:    Optional[str] = None,   # IST "YYYY-MM-DDTHH:MM:SS"
@@ -488,15 +562,38 @@ def fetch_session_timeline(
         end_time   = now_ist.strftime("%Y-%m-%dT23:59:59")
         start_time = (now_ist - timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
 
-    # Try primary endpoint; if not found, retry on the other endpoint
+    print(f"DEBUG loki fetch_session_timeline: session={session_id} helpdesk={helpdesk_type} start={start_time} end={end_time}")
+
+    # Try primary endpoint; retry once on server crash, then fallback to other endpoint
     fallback_type = "customer" if helpdesk_type == "merchant" else "merchant"
     try:
-        return _fetch_from_loki(session_id, start_time, end_time, helpdesk_type)
+        try:
+            return _fetch_from_loki(session_id, start_time, end_time, helpdesk_type)
+        except ValueError as retry_err:
+            if "server error" in str(retry_err).lower():
+                return _fetch_from_loki(session_id, start_time, end_time, helpdesk_type)
+            raise
     except ValueError as primary_err:
         err_str = str(primary_err)
-        if "not found" in err_str.lower() or "no traceid" in err_str.lower():
+        if any(kw in err_str.lower() for kw in ("not found", "no traceid", "server error")):
+            # Try other Plug/AI endpoint
             try:
                 return _fetch_from_loki(session_id, start_time, end_time, fallback_type)
+            except ValueError as fallback_err:
+                pass  # fall through to OpenSIP
+
+            # Try OpenSIP (merchant endpoint, for AI IVR / outbound campaign sessions)
+            try:
+                start_hms = start_time[11:19]
+                end_hms   = end_time[11:19]
+                if start_hms > end_hms:
+                    date_part = end_time[:10]
+                    start_hms = "00:00:00"
+                else:
+                    date_part = start_time[:10]
+                return _fetch_from_opensip(session_id, date_part, start_hms, end_hms)
             except ValueError:
-                pass  # raise the original error
+                pass
+
+            raise ValueError("No traceId found for provided sessionId in Plug logs.") from None
         raise

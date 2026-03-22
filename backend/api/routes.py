@@ -25,7 +25,7 @@ from models import (
 from ingestion.aggregator import aggregate_feedback, get_channel_sample_counts
 from analysis.clustering import categorise_feedback
 from analysis.insights import generate_insights
-from ingestion.trino_helpdesk import fetch_helpdesk_insights, fetch_transcript, fetch_master_data, fetch_eval, fetch_function_calls, fetch_session_lookup
+from ingestion.trino_helpdesk import fetch_helpdesk_insights, fetch_transcript, fetch_master_data, fetch_eval, fetch_function_calls, fetch_session_lookup, fetch_sessions_by_mid
 from ingestion.loki import fetch_session_timeline
 from ingestion.trino_campaigns import fetch_campaign_list, fetch_campaign_analysis, fetch_ivr_insights, fetch_soundbox_insights
 from models import TranscriptMessage, MasterDataResponse, EvalResponse
@@ -242,6 +242,20 @@ def session_lookup(session_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Session lookup failed: {str(e)}")
+
+
+@router.get("/helpdesk/sessions-by-mid/{mid}", tags=["helpdesk"])
+def sessions_by_mid(mid: str, limit: int = Query(default=50, ge=1, le=200)):
+    """Fetch recent sessions for a given Merchant ID."""
+    try:
+        results = fetch_sessions_by_mid(mid, limit)
+        if not results:
+            raise HTTPException(status_code=404, detail=f"No sessions found for MID '{mid}'.")
+        return results
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"MID lookup failed: {str(e)}")
 
 
 @router.get("/campaigns", tags=["campaigns"])
@@ -501,14 +515,279 @@ def log_query(req: LogQueryRequest):
     client = _OpenAI(api_key=tfy_key, base_url=tfy_base)
     resp = client.chat.completions.create(
         model=tfy_model,
-        max_tokens=1024,
+        max_tokens=8000,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_message},
         ],
     )
 
-    answer = resp.choices[0].message.content if resp.choices else "No response generated."
+    msg = resp.choices[0].message if resp.choices else None
+    answer = (getattr(msg, "content", None) or getattr(msg, "reasoning_content", None) or "No response generated.") if msg else "No response generated."
+    return {"answer": answer}
+
+
+import json as _json_lib
+
+class RcaChatRequest(_BaseModel):
+    mid: str
+    sessions: List[Dict[str, Any]]          # pre-fetched session list from frontend
+    message: str                             # user's current message ("__auto__" for initial analysis)
+    history: List[Dict[str, str]] = []       # [{role, content}, ...] prior turns
+
+
+# ── Tool definitions exposed to the LLM ───────────────────────────────────────
+_RCA_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_transcript",
+            "description": (
+                "Fetch the full conversation transcript for a specific session ID from Trino. "
+                "Use this whenever you need to read the actual messages exchanged in a session "
+                "to answer a question in detail."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "The session ID to fetch the transcript for.",
+                    },
+                    "helpdesk_type": {
+                        "type": "string",
+                        "enum": ["merchant", "customer"],
+                        "description": "Helpdesk type. Use 'merchant' for p4b* channels, 'customer' for consumer channels. Defaults to 'merchant'.",
+                    },
+                },
+                "required": ["session_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_loki_logs",
+            "description": (
+                "Fetch structured debug logs from Loki for a specific session ID. "
+                "Use this to investigate technical issues — errors, workflow failures, "
+                "intent detection, API calls, handoffs, or any backend event that happened "
+                "during the session. Returns a chronological timeline of log events."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "The session ID to fetch Loki logs for.",
+                    },
+                    "helpdesk_type": {
+                        "type": "string",
+                        "enum": ["merchant", "customer"],
+                        "description": "Helpdesk type — determines which Loki endpoint to use. Defaults to 'merchant'.",
+                    },
+                },
+                "required": ["session_id"],
+            },
+        },
+    },
+]
+
+
+def _exec_fetch_transcript(session_id: str, helpdesk_type: str, sessions: List[Dict]) -> str:
+    """Execute fetch_transcript via Trino and return a formatted string for the LLM."""
+    # Auto-detect helpdesk_type from the session list if not explicitly provided
+    for s in sessions:
+        if s.get("session_id") == session_id and s.get("helpdesk_type"):
+            helpdesk_type = s["helpdesk_type"]
+            break
+    try:
+        msgs = fetch_transcript(session_id, helpdesk_type)
+        if not msgs:
+            return f"No transcript found for session {session_id}."
+        lines = [f"TRANSCRIPT — session {session_id} ({len(msgs)} messages). Present these messages EXACTLY as written below. Do NOT paraphrase, summarise, or interpret any message. Copy each message verbatim."]
+        lines.append("---")
+        for m in msgs:
+            raw_role = (m.get("role") or "").lower()
+            if raw_role in ("assistant", "bot"):
+                speaker = "Assistant"
+            elif raw_role == "user":
+                speaker = "User"
+            else:
+                speaker = raw_role.capitalize() or "System"
+            text = (m.get("content") or "").strip()
+            ts   = str(m.get("created_at") or "")[:19]
+            lines.append(f"[{ts}] {speaker}: {text}")
+        return "\n".join(lines)
+    except Exception as exc:
+        return f"Error fetching transcript for {session_id}: {exc}"
+
+
+def _exec_fetch_loki_logs(session_id: str, helpdesk_type: str, sessions: List[Dict]) -> str:
+    """Fetch Loki logs for a session — uses the same fetch_session_timeline() as the Debug bot."""
+    from ingestion.loki import fetch_session_timeline
+
+    # Get helpdesk_type from sessions payload; let fetch_session_timeline
+    # look up the timestamp from cst_conversation via Trino (same source as Debug bot).
+    for s in sessions:
+        if s.get("session_id") == session_id:
+            if s.get("helpdesk_type"):
+                helpdesk_type = s["helpdesk_type"]
+            break
+
+    events = fetch_session_timeline(session_id, None, None, helpdesk_type)
+
+    if not events:
+        raise RuntimeError(f"No Loki logs found for session {session_id}.")
+
+    lines = [f"Loki logs for session `{session_id}` ({len(events)} events):"]
+    lines.append("---")
+    for e in events:
+        ts         = str(e.get("timestamp") or "")[:19]
+        icon       = e.get("icon", "")
+        phase      = e.get("phase", "")
+        level      = e.get("level", "")
+        message    = e.get("message", "")
+        offset     = e.get("offset_ms")
+        offset_str = f" (+{offset}ms)" if offset is not None and offset > 0 else ""
+        lines.append(f"[{ts}{offset_str}] {icon} [{phase}/{level}] {message}")
+        meta = e.get("meta") or {}
+        if meta:
+            meta_str = " | ".join(f"{k}={v}" for k, v in list(meta.items())[:4])
+            lines.append(f"    meta: {meta_str}")
+    return "\n".join(lines)
+
+
+@router.post("/helpdesk/rca-chat", tags=["helpdesk"])
+def rca_chat(req: RcaChatRequest):
+    """
+    RCA Bot: analyse all sessions for a MID and answer free-text questions.
+    Supports tool calling — the LLM can fetch full transcripts from Trino on demand.
+    Pass message="__auto__" for the initial summary analysis.
+    """
+    tfy_base  = os.getenv("TFY_BASE_URL", "")
+    tfy_key   = os.getenv("TFY_API_KEY",  "")
+    tfy_model = os.getenv("TFY_MODEL", "groq/openai-gpt-oss-120b")
+
+    if not tfy_key or not tfy_base:
+        raise HTTPException(status_code=503, detail="LLM API not configured on server.")
+
+    if not req.sessions:
+        raise HTTPException(status_code=400, detail="No sessions provided.")
+
+    # Build a structured summary of all sessions for the LLM
+    lines = []
+    for s in req.sessions:
+        parts = [f"  Session: {s.get('session_id','?')}"]
+        if s.get('cst_entity'):   parts.append(f"Channel: {s['cst_entity']}")
+        if s.get('helpdesk_type'):parts.append(f"Helpdesk: {s['helpdesk_type']}")
+        if s.get('created_at'):   parts.append(f"Date: {s['created_at'][:10]}")
+        if s.get('issue_l1'):     parts.append(f"Issue-L1: {s['issue_l1']}")
+        if s.get('issue_l2'):     parts.append(f"Issue-L2: {s['issue_l2']}")
+        if s.get('tone'):         parts.append(f"Tone: {s['tone']}")
+        lines.append(" | ".join(parts))
+    sessions_context = "\n".join(lines)
+
+    user_msg = (
+        "Summarise this merchant's support history in simple, plain language. "
+        "Focus on: what are their biggest complaints, and why do they keep coming back again and again?"
+        if req.message == "__auto__" else req.message
+    )
+
+    system_prompt = (
+        "You are a helpful support analyst for Paytm. "
+        "You are given all support sessions for a single merchant. "
+        "Your job is to explain — in simple, everyday language — what problems this merchant is facing and why they keep contacting support repeatedly.\n\n"
+        f"MID: {req.mid}\n"
+        f"Total sessions: {len(req.sessions)}\n\n"
+        f"Session data:\n{sessions_context}\n\n"
+        "You have two tools available:\n"
+        "- fetch_transcript: reads the exact User/Assistant messages of a session from Trino.\n"
+        "- fetch_loki_logs: fetches backend debug logs from Loki for a session — use this to investigate errors, workflow failures, intent detection issues, API call results, or any technical problem.\n"
+        "Use these tools whenever you need more detail to answer accurately.\n\n"
+        "CRITICAL RULE — when presenting transcript messages: "
+        "NEVER paraphrase, summarise, or interpret what was said. "
+        "Copy every User and Assistant message EXACTLY as it appears in the transcript. "
+        "Show them as a simple list in this format:\n"
+        "  **User:** <exact message text>\n"
+        "  **Assistant:** <exact message text>\n"
+        "Do not add a table, do not rewrite any message, do not add commentary between messages.\n\n"
+        "For the initial summary, answer these two questions clearly:\n"
+        "1. What are the top complaints? (explain each one in 1-2 plain sentences — avoid jargon)\n"
+        "2. Why does this merchant keep coming back? (identify the root cause)\n\n"
+        "Keep the tone conversational and easy to understand. "
+        "Use bullet points and short paragraphs. "
+        "For follow-up questions, answer concisely in plain language."
+    )
+
+    messages = [{"role": "system", "content": system_prompt}]
+    for turn in req.history:
+        if turn.get("role") in ("user", "assistant") and turn.get("content"):
+            messages.append({"role": turn["role"], "content": turn["content"]})
+    messages.append({"role": "user", "content": user_msg})
+
+    try:
+        client = _OpenAI(api_key=tfy_key, base_url=tfy_base)
+        answer = ""
+
+        # Tool-call loop — up to 5 rounds
+        for _ in range(5):
+            resp = client.chat.completions.create(
+                model=tfy_model,
+                max_tokens=16000,
+                messages=messages,
+                temperature=0.3,
+                tools=_RCA_TOOLS,
+                tool_choice="auto",
+            )
+            choice = resp.choices[0] if resp.choices else None
+            if not choice:
+                break
+
+            if choice.finish_reason == "tool_calls" and choice.message.tool_calls:
+                # Build assistant message dict with tool_calls
+                tool_calls_payload = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                    }
+                    for tc in choice.message.tool_calls
+                ]
+                messages.append({"role": "assistant", "content": None, "tool_calls": tool_calls_payload})
+
+                # Execute each tool call and append results
+                for tc in choice.message.tool_calls:
+                    args  = _json_lib.loads(tc.function.arguments or "{}")
+                    sid   = args.get("session_id", "")
+                    htype = args.get("helpdesk_type", "merchant")
+                    fn    = tc.function.name
+                    if fn == "fetch_transcript":
+                        result = _exec_fetch_transcript(sid, htype, req.sessions)
+                    elif fn == "fetch_loki_logs":
+                        try:
+                            result = _exec_fetch_loki_logs(sid, htype, req.sessions)
+                        except Exception as loki_err:
+                            # Surface Loki errors directly — bypass LLM
+                            return {"loki_error": str(loki_err), "session_id": sid}
+                    else:
+                        result = f"Unknown tool: {fn}"
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": result,
+                    })
+            else:
+                # Final text response
+                msg = choice.message
+                answer = (getattr(msg, "content", None) or getattr(msg, "reasoning_content", None) or "").strip()
+                break
+
+        if not answer:
+            raise ValueError("LLM returned empty response.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"RCA Bot LLM error: {e}")
+
     return {"answer": answer}
 
 

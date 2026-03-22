@@ -25,7 +25,7 @@ const SESSION_PAGE_SIZE = 20;
 const STATUS_STYLE = {
   USER_HANGED_UP: { bg: '#f1f5f9', color: '#475569' },
   INIT:           { bg: '#fef9c3', color: '#ca8a04' },
-  PREINIT:        { bg: '#e0e7ff', color: '#4338ca' },
+  PREINIT:        { bg: '#dbeafe', color: '#1d4ed8' },
 };
 
 function SessionTable({ sessions }) {
@@ -112,12 +112,12 @@ function SessionTable({ sessions }) {
                         onClick={() => setSessionModal(s.session_id)}
                         style={{
                           display: 'inline-flex', alignItems: 'center', gap: '.3rem',
-                          fontSize: '.72rem', fontWeight: 600, color: '#8b5cf6',
-                          border: '1px solid #8b5cf6', borderRadius: 20,
+                          fontSize: '.72rem', fontWeight: 600, color: '#3b82f6',
+                          border: '1px solid #3b82f6', borderRadius: 20,
                           padding: '2px 10px', background: 'none', cursor: 'pointer',
                         }}
-                        onMouseEnter={e => { e.currentTarget.style.background = '#8b5cf6'; e.currentTarget.style.color = '#fff'; }}
-                        onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#8b5cf6'; }}
+                        onMouseEnter={e => { e.currentTarget.style.background = '#3b82f6'; e.currentTarget.style.color = '#fff'; }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#3b82f6'; }}
                       >
                         💬 View
                       </button>
@@ -159,12 +159,12 @@ function SessionTable({ sessions }) {
                           onClick={() => { setPlayingId(s.session_id); setAudioError(null); }}
                           style={{
                             display: 'inline-flex', alignItems: 'center', gap: '.3rem',
-                            fontSize: '.72rem', fontWeight: 600, color: '#6366f1',
-                            border: '1px solid #6366f1', borderRadius: 20,
+                            fontSize: '.72rem', fontWeight: 600, color: '#2563eb',
+                            border: '1px solid #2563eb', borderRadius: 20,
                             padding: '2px 10px', background: 'none', cursor: 'pointer',
                           }}
-                          onMouseEnter={e => { e.currentTarget.style.background = '#6366f1'; e.currentTarget.style.color = '#fff'; }}
-                          onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#6366f1'; }}
+                          onMouseEnter={e => { e.currentTarget.style.background = '#2563eb'; e.currentTarget.style.color = '#fff'; }}
+                          onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = '#2563eb'; }}
                         >
                           🎧 Listen
                         </button>
@@ -220,7 +220,7 @@ export default function CampaignDashboard({ detail }) {
   return (
     <div className="card" style={{ marginTop: '1rem' }}>
       <div className="card-title">
-        <span className="card-title-icon" style={{ background: '#e0e7ff' }}>📊</span>
+        <span className="card-title-icon" style={{ background: '#dbeafe' }}>📊</span>
         {detail.campaign}
         <span style={{ fontSize: '.75rem', fontWeight: 400, color: '#94a3b8', marginLeft: '.5rem' }}>
           {detail.since} → {detail.until}
@@ -230,8 +230,8 @@ export default function CampaignDashboard({ detail }) {
       {/* KPI row */}
       <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', marginBottom: '1.5rem' }}>
         {[
-          { label: 'Total Calls',       value: fmtNum(detail.total_calls),       color: '#6366f1' },
-          { label: 'Avg Duration',      value: fmtDur(detail.avg_duration),      color: '#8b5cf6' },
+          { label: 'Total Calls',       value: fmtNum(detail.total_calls),       color: '#2563eb' },
+          { label: 'Avg Duration',      value: fmtDur(detail.avg_duration),      color: '#3b82f6' },
           { label: 'Answer Rate',       value: `${detail.answer_rate}%`,         color: detail.answer_rate >= 80 ? '#10b981' : '#f59e0b' },
           { label: 'Engagement (≥30s)', value: `${detail.engagement_rate}%`,     color: detail.engagement_rate >= 50 ? '#10b981' : '#f59e0b' },
           { label: 'Customer Hang-ups', value: fmtNum(detail.customer_hangups),  color: '#ef4444' },
@@ -265,10 +265,10 @@ export default function CampaignDashboard({ detail }) {
                 <div style={{ flex: 1, background: '#f1f5f9', borderRadius: 99, height: 10, overflow: 'hidden' }}>
                   <div style={{
                     height: '100%', width: `${pct}%`, minWidth: pct > 0 ? 4 : 0,
-                    background: '#6366f1', borderRadius: 99, transition: 'width .4s ease',
+                    background: '#2563eb', borderRadius: 99, transition: 'width .4s ease',
                   }} />
                 </div>
-                <div style={{ width: 36, fontSize: '.72rem', fontWeight: 700, color: '#6366f1', flexShrink: 0 }}>
+                <div style={{ width: 36, fontSize: '.72rem', fontWeight: 700, color: '#2563eb', flexShrink: 0 }}>
                   {pct}%
                 </div>
                 <div style={{ width: 54, fontSize: '.68rem', color: '#94a3b8', flexShrink: 0 }}>

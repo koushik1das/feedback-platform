@@ -11,7 +11,7 @@ import React from 'react';
 const CHANNELS = [
   { id: 'app_store',  name: 'App Store',             icon: '⭐', description: 'Google Play reviews & ratings',            color: '#f0fdf4' },
   { id: 'helpdesk',   name: 'Help Desk',              icon: '🎧', description: 'Customer & merchant support interactions', color: '#fefce8' },
-  { id: 'campaigns',  name: 'Outbound Campaign',      icon: '📞', description: 'AI voice bot call analytics',             color: '#ede9fe' },
+  { id: 'campaigns',  name: 'Outbound Campaign',      icon: '📞', description: 'AI voice bot call analytics',             color: '#dbeafe' },
   { id: 'ivr',        name: 'AI IVR',                 icon: '📱', description: 'MHD Call Center inbound analytics',       color: '#f0fdf4' },
   { id: 'soundbox',   name: 'AI Soundbox',            icon: '🔊', description: 'AI bot calls for Soundbox & EDC devices',  color: '#fef3c7' },
 ];
@@ -226,7 +226,7 @@ export default function ChannelSelector({
               aria-checked={isSelected}
               tabIndex={0}
               onKeyDown={(e) => e.key === 'Enter' && onSelectChannel(ch.id)}
-              style={{ borderColor: isSelected ? '#6366f1' : undefined }}
+              style={{ borderColor: isSelected ? '#2563eb' : undefined }}
             >
               <div className={`channel-card-icon ${isSelected ? 'check-mark' : ''}`} style={{ background: ch.color }}>
                 {ch.icon}

@@ -785,3 +785,55 @@ def fetch_session_lookup(session_id: str) -> Optional[Dict[str, Any]]:
             continue
 
     return None
+
+
+def fetch_sessions_by_mid(mid: str, limit: int = 50) -> List[Dict[str, Any]]:
+    """
+    Fetch recent sessions for a given Merchant ID.
+    Joins support_ticket_details with feedback snapshot for category/tone.
+    Returns list of session dicts ordered by created_at desc.
+    """
+    conn = _connect()
+    cur  = conn.cursor()
+    results = []
+
+    for helpdesk_type, schema in DB_SCHEMA.items():
+        std_table = f"hive.{schema}.support_ticket_details_snapshot_v3"
+        fb_table  = f"hive.{schema}.feedback_complete_analyzed_data_snapshot_v3"
+        try:
+            cur.execute(f"""
+                SELECT
+                    s.id AS session_id,
+                    s.cst_entity,
+                    s.created_at,
+                    s.issue_category_l1,
+                    s.issue_category_l2,
+                    f.out_key_problem_desc,
+                    f.out_key_problem_sub_desc,
+                    f.out_merchant_tone
+                FROM {std_table} s
+                LEFT JOIN {fb_table} f
+                    ON f.ticket_id = s.id
+                    AND f.dl_last_updated >= DATE '2025-01-01'
+                WHERE s.merchant_id = '{mid}'
+                  AND s.dl_last_updated >= DATE '2025-01-01'
+                ORDER BY s.created_at DESC
+                LIMIT {limit}
+            """)
+            for row in cur.fetchall():
+                session_id, entity, created_at, l1, l2, ai_l1, ai_l2, tone = row
+                results.append({
+                    "session_id":    session_id,
+                    "cst_entity":    entity,
+                    "created_at":    created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+                    "issue_l1":      ai_l1 or l1,
+                    "issue_l2":      ai_l2 or l2,
+                    "tone":          (tone or "").lower(),
+                    "helpdesk_type": helpdesk_type,
+                })
+            if results:
+                break
+        except Exception:
+            continue
+
+    return results

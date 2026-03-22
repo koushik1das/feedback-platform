@@ -6,7 +6,7 @@ export default function Login({ error }) {
   return (
     <div style={{
       minHeight: '100vh',
-      background: 'linear-gradient(135deg, #f1f5f9 0%, #e0e7ff 100%)',
+      background: 'linear-gradient(135deg, #f1f5f9 0%, #dbeafe 100%)',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
@@ -24,7 +24,7 @@ export default function Login({ error }) {
         {/* Logo */}
         <div style={{
           width: 64, height: 64, borderRadius: 16,
-          background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+          background: 'linear-gradient(135deg, #2563eb, #3b82f6)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontSize: '2rem', margin: '0 auto 1.25rem',
           boxShadow: '0 4px 14px rgba(99,102,241,.35)',

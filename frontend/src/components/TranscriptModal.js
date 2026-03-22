@@ -7,6 +7,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import SessionTimeline from './SessionTimeline';
 
 const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
@@ -14,7 +15,7 @@ const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 function roleMeta(role) {
-  if (role === 'user')      return { label: 'Merchant', bg: '#6366f1', color: '#fff',    isUser: true  };
+  if (role === 'user')      return { label: 'Merchant', bg: '#2563eb', color: '#fff',    isUser: true  };
   if (role === 'assistant') return { label: 'Bot',      bg: '#f1f5f9', color: '#0f172a', isUser: false };
   return                           { label: 'System',   bg: '#fef9c3', color: '#78350f', isUser: false };
 }
@@ -24,7 +25,7 @@ const LANG_LABELS = { hi:'HI', en:'EN', mr:'MR', ta:'TA', te:'TE', kn:'KN', bn:'
 function LangTag({ lang }) {
   if (!lang) return null;
   return (
-    <span style={{ fontSize:'.6rem', fontWeight:700, background:'#e0e7ff', color:'#4f46e5',
+    <span style={{ fontSize:'.6rem', fontWeight:700, background:'#dbeafe', color:'#1d4ed8',
       borderRadius:3, padding:'1px 4px', letterSpacing:'.04em' }}>
       {LANG_LABELS[lang.toLowerCase()] || lang.toUpperCase()}
     </span>
@@ -138,7 +139,7 @@ function ListenButton({ ticketId, createdAt, recordingPath }) {
   );
 }
 
-function Spinner({ size = 24, color = '#6366f1' }) {
+function Spinner({ size = 24, color = '#2563eb' }) {
   return (
     <div style={{ width:size, height:size, border:`3px solid #e2e8f0`,
       borderTopColor: color, borderRadius:'50%', animation:'spin .7s linear infinite' }} />
@@ -573,7 +574,7 @@ function FunctionCallsSection({ calls, loading, error }) {
   );
 }
 
-export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', showEval = true, recordingPath = null, onClose }) {
+export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', showEval = true, recordingPath = null, onClose, onSearch }) {
   const [messages,    setMessages]    = useState([]);
   const [masterData,  setMasterData]  = useState(null);
   const [evalData,    setEvalData]    = useState(null);
@@ -586,7 +587,8 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
   const [mdError,     setMdError]     = useState(null);
   const [evalError,   setEvalError]   = useState(null);
   const [fnError,     setFnError]     = useState(null);
-  const [rightTab,    setRightTab]    = useState('data');   // 'data' | 'timeline'
+  const [rightTab,    setRightTab]    = useState('timeline');   // 'data' | 'timeline'
+  const [searchVal,   setSearchVal]   = useState('');
   const bodyRef = useRef(null);
 
   useEffect(() => {
@@ -671,12 +673,52 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
               </div>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            style={{ background:'#f1f5f9', border:'none', borderRadius:8,
-              width:32, height:32, cursor:'pointer', fontSize:'1rem', color:'#64748b',
-              display:'flex', alignItems:'center', justifyContent:'center' }}
-          >✕</button>
+          <div style={{ display:'flex', alignItems:'center', gap:'.5rem' }}>
+            {onSearch && (
+              <form
+                onSubmit={e => {
+                  e.preventDefault();
+                  const v = searchVal.trim();
+                  if (!v) return;
+                  setSearchVal('');
+                  onClose();
+                  onSearch(v);
+                }}
+                style={{ display:'flex', alignItems:'center', gap:'.35rem' }}
+              >
+                <input
+                  type="text"
+                  value={searchVal}
+                  onChange={e => setSearchVal(e.target.value)}
+                  placeholder="Search Session / Merchant ID"
+                  style={{
+                    padding:'.38rem .65rem', borderRadius:7,
+                    border:'1.5px solid #e2e8f0', fontSize:'.78rem',
+                    outline:'none', color:'#334155', width:210,
+                  }}
+                  onFocus={e => { e.currentTarget.style.borderColor = '#2563eb'; }}
+                  onBlur={e => { e.currentTarget.style.borderColor = '#e2e8f0'; }}
+                />
+                <button
+                  type="submit"
+                  disabled={!searchVal.trim()}
+                  style={{
+                    padding:'.38rem .55rem', borderRadius:7, border:'none',
+                    background: searchVal.trim() ? '#2563eb' : '#e2e8f0',
+                    color: searchVal.trim() ? '#fff' : '#94a3b8',
+                    fontSize:'.9rem', cursor: searchVal.trim() ? 'pointer' : 'not-allowed',
+                    lineHeight:1,
+                  }}
+                >🔍</button>
+              </form>
+            )}
+            <button
+              onClick={onClose}
+              style={{ background:'#f1f5f9', border:'none', borderRadius:8,
+                width:32, height:32, cursor:'pointer', fontSize:'1rem', color:'#64748b',
+                display:'flex', alignItems:'center', justifyContent:'center' }}
+            >✕</button>
+          </div>
         </div>
 
         {/* ── Two-panel body ── */}
@@ -761,7 +803,7 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
                         <span style={{ whiteSpace:'pre-wrap' }}>{msg.content}</span>
                       ) : (
                         <div className="md-bubble">
-                          <ReactMarkdown>{cleanBot(msg.content)}</ReactMarkdown>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleanBot(msg.content)}</ReactMarkdown>
                         </div>
                       )}
                     </div>
@@ -771,7 +813,7 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
                       <div style={{ display:'flex', flexWrap:'wrap', gap:'.35rem',
                         marginTop:'.4rem', maxWidth:'88%' }}>
                         {msg.cta_options.map((cta, i) => (
-                          <span key={i} style={{ background:'#e0e7ff', color:'#4f46e5',
+                          <span key={i} style={{ background:'#dbeafe', color:'#1d4ed8',
                             borderRadius:20, padding:'.2rem .6rem',
                             fontSize:'.72rem', fontWeight:600 }}>{cta}</span>
                         ))}

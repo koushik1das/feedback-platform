@@ -6,8 +6,10 @@
  *   helpdesk  → Trino via /api/helpdesk/analyse
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import axios from 'axios';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 import ChannelSelector    from './components/ChannelSelector';
 import TopIssues          from './components/TopIssues';
@@ -73,6 +75,440 @@ function _clearToken() {
   try { localStorage.removeItem('fiq_token'); } catch {}
 }
 
+function relativeDate(utcStr) {
+  if (!utcStr) return '';
+  const sessionDate = new Date(utcStr.endsWith('Z') ? utcStr : utcStr + 'Z');
+  const now = new Date();
+  // Compare calendar dates in local time
+  const sessionDay = new Date(sessionDate.getFullYear(), sessionDate.getMonth(), sessionDate.getDate());
+  const todayDay   = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diffDays   = Math.round((todayDay - sessionDay) / 86400000);
+  if (diffDays === 0) return 'Today';
+  if (diffDays === 1) return 'Yesterday';
+  if (diffDays < 7)  return `${diffDays} days ago`;
+  if (diffDays < 14) return '1 week ago';
+  if (diffDays < 30) return `${Math.floor(diffDays / 7)} weeks ago`;
+  if (diffDays < 60) return '1 month ago';
+  return `${Math.floor(diffDays / 30)} months ago`;
+}
+
+// ─── RCA Bot helpers ──────────────────────────────────────────────────────────
+
+const rcaMdComponents = {
+  table: props => (
+    <div style={{ overflowX: 'auto', margin: '8px 0' }}>
+      <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '.8rem' }} {...props} />
+    </div>
+  ),
+  thead: props => <thead style={{ background: '#e2e8f0' }} {...props} />,
+  th: props => <th style={{ border: '1px solid #cbd5e1', padding: '6px 10px', textAlign: 'left', fontWeight: 600 }} {...props} />,
+  td: props => <td style={{ border: '1px solid #cbd5e1', padding: '6px 10px' }} {...props} />,
+  hr: () => <hr style={{ border: 'none', borderTop: '1px solid #e2e8f0', margin: '10px 0' }} />,
+  p: props => <p style={{ margin: '4px 0', lineHeight: 1.6 }} {...props} />,
+  strong: props => <strong style={{ fontWeight: 700 }} {...props} />,
+  h3: props => <h3 style={{ fontSize: '.88rem', fontWeight: 700, margin: '10px 0 4px' }} {...props} />,
+  h4: props => <h4 style={{ fontSize: '.84rem', fontWeight: 700, margin: '8px 0 4px' }} {...props} />,
+  ul: props => <ul style={{ paddingLeft: '1.2em', margin: '4px 0' }} {...props} />,
+  ol: props => <ol style={{ paddingLeft: '1.2em', margin: '4px 0' }} {...props} />,
+  li: props => <li style={{ margin: '2px 0' }} {...props} />,
+};
+
+function RcaMessage({ role, content }) {
+  const isBot = role === 'assistant';
+  return (
+    <div style={{
+      display: 'flex', justifyContent: isBot ? 'flex-start' : 'flex-end',
+      marginBottom: '12px',
+    }}>
+      <div style={{
+        maxWidth: '90%', padding: '10px 14px',
+        background: isBot ? '#f8fafc' : '#2563eb',
+        color: isBot ? '#1e293b' : '#fff',
+        borderRadius: isBot ? '4px 14px 14px 14px' : '14px 4px 14px 14px',
+        fontSize: '.82rem', lineHeight: 1.6,
+        wordBreak: 'break-word',
+        border: isBot ? '1px solid #e2e8f0' : 'none',
+        boxShadow: '0 1px 3px rgba(0,0,0,.06)',
+      }}>
+        {isBot
+          ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={rcaMdComponents}>{content}</ReactMarkdown>
+          : content}
+      </div>
+    </div>
+  );
+}
+
+function RcaLoader({ label }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '4px 14px 14px 14px', maxWidth: '85%', marginBottom: 12 }}>
+      <div style={{
+        width: 16, height: 16, borderRadius: '50%',
+        border: '2px solid #dbeafe', borderTopColor: '#2563eb',
+        animation: 'spin 0.8s linear infinite', flexShrink: 0,
+      }} />
+      <span style={{ fontSize: '.8rem', color: '#475569' }}>{label}</span>
+    </div>
+  );
+}
+
+function RcaErrorBubble({ content, onRetry, soft }) {
+  if (soft) {
+    // Not-found / no-logs — grey info style, no retry
+    return (
+      <div style={{ marginBottom: 12, maxWidth: '90%' }}>
+        <div style={{ padding: '8px 14px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: '4px 14px 14px 14px', fontSize: '.78rem', color: '#64748b', lineHeight: 1.5, display: 'flex', alignItems: 'flex-start', gap: 7 }}>
+          <span style={{ fontSize: '.85rem', flexShrink: 0 }}>ℹ️</span>
+          <span>{content}</span>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div style={{ marginBottom: 12, maxWidth: '90%' }}>
+      <div style={{ padding: '10px 14px', background: '#fef2f2', border: '1px solid #fca5a5', borderRadius: '4px 14px 14px 14px', fontSize: '.82rem', color: '#dc2626', lineHeight: 1.5 }}>
+        {content}
+      </div>
+      {onRetry && (
+        <button onClick={onRetry} style={{
+          marginTop: 6, fontSize: '.72rem', fontWeight: 700,
+          background: '#dc2626', color: '#fff', border: 'none',
+          borderRadius: 6, padding: '4px 14px', cursor: 'pointer',
+        }}>
+          ↻ Retry
+        </button>
+      )}
+    </div>
+  );
+}
+
+function MidDrawer({ midSessions, onClose, onViewTranscript, rcaMessages, setRcaMessages, rcaInput, setRcaInput, rcaLoading, setRcaLoading, rcaChatEndRef, onSearch }) {
+  const API = 'http://localhost:8000/api';
+  const autoFired   = useRef(false);
+  const lastMsgRef  = useRef('__auto__');
+  const [midSearchVal, setMidSearchVal] = useState('');
+
+  // Auto-trigger initial RCA analysis when drawer first opens (ref guard prevents StrictMode double-fire)
+  useEffect(() => {
+    if (autoFired.current) return;
+    autoFired.current = true;
+    sendRca('__auto__');
+  }, []); // eslint-disable-line
+
+  // Scroll to bottom whenever messages change
+  useEffect(() => {
+    if (rcaChatEndRef.current) rcaChatEndRef.current.scrollIntoView({ behavior: 'smooth' });
+  }, [rcaMessages, rcaLoading, rcaChatEndRef]);
+
+  async function sendRca(message, isRetry = false) {
+    lastMsgRef.current = message;
+    const userMsg = message === '__auto__' ? null : message;
+
+    // On retry: strip trailing error (and the user bubble that preceded it) from state,
+    // and rebuild history without them so the LLM doesn't see duplicates.
+    let baseMessages;
+    if (isRetry) {
+      setRcaMessages(prev => {
+        // Drop trailing error message; if the message before it is the same user bubble, drop that too
+        let msgs = prev.filter(m => m.role !== 'error');
+        if (msgs.length && msgs[msgs.length - 1].role === 'user' && msgs[msgs.length - 1].content === userMsg) {
+          msgs = msgs.slice(0, -1);
+        }
+        baseMessages = msgs;
+        return msgs;
+      });
+    } else {
+      baseMessages = rcaMessages.filter(m => m.role !== '__typing__' && m.role !== 'error');
+    }
+
+    const history = (baseMessages || rcaMessages.filter(m => m.role !== '__typing__' && m.role !== 'error'));
+
+    // Add user bubble (skip for auto and retry — retry re-adds it below after state settles)
+    if (userMsg && !isRetry) {
+      setRcaMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+      setRcaInput('');
+    } else if (userMsg && isRetry) {
+      setRcaMessages(prev => [...prev, { role: 'user', content: userMsg }]);
+    }
+    setRcaLoading(true);
+
+    try {
+      const res = await fetch(`${API}/helpdesk/rca-chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mid: midSessions.mid,
+          sessions: midSessions.sessions,
+          message,
+          history,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        const errMsg = data?.detail || `Server error ${res.status}`;
+        setRcaMessages(prev => [...prev, { role: 'error', content: errMsg }]);
+      } else if (data.loki_error) {
+        const sid = data.session_id ? ` (${data.session_id})` : '';
+        const errMsg = data.loki_error;
+        const isNotFound = /no traceid|not found|no loki logs/i.test(errMsg);
+        const isTransient = /timeout|timed out|gateway|server error|503|504/i.test(errMsg);
+        setRcaMessages(prev => [...prev, {
+          role: 'error',
+          content: isNotFound
+            ? `No Loki logs available for session${sid}. This session may not have gone through the AI bot.`
+            : `Failed to fetch Loki logs${sid}: ${errMsg}`,
+          soft: isNotFound && !isTransient,
+        }]);
+      } else if (data.answer) {
+        setRcaMessages(prev => [...prev, { role: 'assistant', content: data.answer }]);
+      } else {
+        setRcaMessages(prev => [...prev, { role: 'error', content: 'LLM returned an empty response. Check server logs.' }]);
+      }
+    } catch (err) {
+      setRcaMessages(prev => [
+        ...prev,
+        { role: 'error', content: `Network error: ${err.message}` },
+      ]);
+    } finally {
+      setRcaLoading(false);
+    }
+  }
+
+  function handleKeyDown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (rcaInput.trim() && !rcaLoading) sendRca(rcaInput.trim());
+    }
+  }
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(15,23,42,.4)', zIndex: 1000 }} />
+
+      {/* Drawer — 90% wide */}
+      <div style={{
+        position: 'fixed', top: 0, right: 0, bottom: 0,
+        width: '90%', background: '#f8fafc', zIndex: 1001,
+        display: 'flex', flexDirection: 'column',
+        boxShadow: '-8px 0 48px rgba(0,0,0,.22)',
+      }}>
+        {/* ── Top header bar ── */}
+        <div style={{
+          padding: '.8rem 1.25rem', borderBottom: '1px solid #e2e8f0',
+          background: '#fff', display: 'flex', alignItems: 'center',
+          justifyContent: 'space-between', flexShrink: 0,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{ fontWeight: 700, fontSize: '.95rem', color: '#0f172a' }}>MID Analysis</div>
+            <span style={{ fontFamily: 'monospace', fontSize: '.78rem', color: '#2563eb', background: '#eff6ff', padding: '2px 8px', borderRadius: 4 }}>{midSessions.mid}</span>
+            <span style={{ fontSize: '.75rem', color: '#64748b' }}>{midSessions.sessions.length} session{midSessions.sessions.length !== 1 ? 's' : ''}</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+            {onSearch && (
+              <form
+                onSubmit={e => {
+                  e.preventDefault();
+                  const v = midSearchVal.trim();
+                  if (!v) return;
+                  setMidSearchVal('');
+                  onClose();
+                  onSearch(v);
+                }}
+                style={{ display: 'flex', alignItems: 'center', gap: '.35rem' }}
+              >
+                <input
+                  type="text"
+                  value={midSearchVal}
+                  onChange={e => setMidSearchVal(e.target.value)}
+                  placeholder="Search Session / Merchant ID"
+                  style={{
+                    padding: '.38rem .65rem', borderRadius: 7,
+                    border: '1.5px solid #e2e8f0', fontSize: '.78rem',
+                    outline: 'none', color: '#334155', width: 210,
+                  }}
+                  onFocus={e => { e.currentTarget.style.borderColor = '#2563eb'; }}
+                  onBlur={e => { e.currentTarget.style.borderColor = '#e2e8f0'; }}
+                />
+                <button
+                  type="submit"
+                  disabled={!midSearchVal.trim()}
+                  style={{
+                    padding: '.38rem .55rem', borderRadius: 7, border: 'none',
+                    background: midSearchVal.trim() ? '#2563eb' : '#e2e8f0',
+                    color: midSearchVal.trim() ? '#fff' : '#94a3b8',
+                    fontSize: '.9rem', cursor: midSearchVal.trim() ? 'pointer' : 'not-allowed',
+                    lineHeight: 1,
+                  }}
+                >🔍</button>
+              </form>
+            )}
+            <button onClick={onClose} style={{ background: 'none', border: 'none', fontSize: '1.2rem', cursor: 'pointer', color: '#94a3b8' }}>✕</button>
+          </div>
+        </div>
+
+        {/* ── Body: two columns ── */}
+        <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+
+          {/* Left: timeline — 28% */}
+          <div style={{
+            width: '28%', borderRight: '1px solid #e2e8f0',
+            background: '#fff', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+          }}>
+            <div style={{ padding: '.65rem 1rem', borderBottom: '1px solid #f1f5f9', fontSize: '.72rem', fontWeight: 600, color: '#94a3b8', letterSpacing: '.06em', textTransform: 'uppercase', flexShrink: 0 }}>
+              Sessions across channels
+            </div>
+            <div style={{ overflowY: 'auto', flex: 1, padding: '1rem 0 1rem 1rem' }}>
+              {/* Timeline vertical track */}
+              <div style={{ position: 'relative', paddingLeft: '20px' }}>
+                {/* Vertical line */}
+                <div style={{ position: 'absolute', left: '6px', top: 0, bottom: 0, width: '2px', background: '#e2e8f0' }} />
+
+                {midSessions.sessions.map((s, idx) => (
+                  <div key={s.session_id} style={{ position: 'relative', marginBottom: '1.25rem' }}>
+                    {/* Timeline dot */}
+                    <div style={{
+                      position: 'absolute', left: '-17px', top: '4px',
+                      width: '10px', height: '10px', borderRadius: '50%',
+                      background: '#2563eb', border: '2px solid #fff',
+                      boxShadow: '0 0 0 2px #2563eb',
+                      flexShrink: 0,
+                    }} />
+
+                    {/* Timestamp badge */}
+                    {s.created_at && (
+                      <div style={{
+                        display: 'inline-block',
+                        fontSize: '.68rem', fontWeight: 700, color: '#2563eb',
+                        background: '#eff6ff', borderRadius: 4,
+                        padding: '1px 7px', marginBottom: '5px',
+                        letterSpacing: '.02em',
+                      }}>
+                        {relativeDate(s.created_at)}
+                      </div>
+                    )}
+
+                    {/* Channel pill */}
+                    {s.cst_entity && (
+                      <span style={{
+                        display: 'inline-block', marginLeft: 5,
+                        fontSize: '.62rem', background: '#f1f5f9', color: '#475569',
+                        borderRadius: 4, padding: '1px 6px', fontWeight: 500,
+                      }}>{s.cst_entity}</span>
+                    )}
+
+                    {/* Conversation summary */}
+                    <div style={{ fontSize: '.75rem', color: '#1e293b', lineHeight: 1.45, marginTop: '3px' }}>
+                      {s.issue_l1 && (
+                        <span style={{ fontWeight: 600, color: '#334155' }}>{s.issue_l1}</span>
+                      )}
+                      {s.issue_l1 && s.issue_l2 && (
+                        <span style={{ color: '#94a3b8' }}> › </span>
+                      )}
+                      {s.issue_l2 && (
+                        <span style={{ color: '#475569' }}>{s.issue_l2}</span>
+                      )}
+                      {s.helpdesk_summary && (
+                        <div style={{ fontSize: '.71rem', color: '#64748b', marginTop: '3px', lineHeight: 1.4 }}>
+                          {s.helpdesk_summary}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Session ID fine print + copy */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginTop: '4px' }}>
+                      <span style={{ fontSize: '.6rem', fontFamily: 'monospace', color: '#cbd5e1', wordBreak: 'break-all' }}>
+                        {s.session_id}
+                      </span>
+                      <button
+                        title="Copy session ID"
+                        onClick={() => navigator.clipboard.writeText(s.session_id)}
+                        style={{ background: 'none', border: 'none', cursor: 'pointer', padding: '0 2px', color: '#cbd5e1', lineHeight: 1, flexShrink: 0 }}
+                        onMouseEnter={e => e.currentTarget.style.color = '#2563eb'}
+                        onMouseLeave={e => e.currentTarget.style.color = '#cbd5e1'}
+                      >
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                        </svg>
+                      </button>
+                    </div>
+
+                    {/* View Transcript */}
+                    <button
+                      onClick={() => onViewTranscript(s.session_id)}
+                      style={{ marginTop: '5px', fontSize: '.63rem', fontWeight: 600, background: '#2563eb', color: '#fff', border: 'none', borderRadius: 4, padding: '2px 9px', cursor: 'pointer' }}
+                    >
+                      View Transcript
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Right: RCA Bot — 72% */}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+            {/* RCA Bot header */}
+            <div style={{ padding: '.65rem 1.25rem', borderBottom: '1px solid #e2e8f0', background: '#fff', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div style={{ width: 8, height: 8, borderRadius: '50%', background: '#22c55e' }} />
+              <span style={{ fontWeight: 600, fontSize: '.85rem', color: '#0f172a' }}>RCA Bot</span>
+              <span style={{ fontSize: '.72rem', color: '#94a3b8' }}>Root Cause Analysis · All sessions</span>
+            </div>
+
+            {/* Messages area */}
+            <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem 1.5rem' }}>
+              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+              {rcaMessages.map((m, i) =>
+                m.role === 'error'
+                  ? <RcaErrorBubble key={i} content={m.content} soft={m.soft} onRetry={m.soft ? null : () => sendRca(lastMsgRef.current, true)} />
+                  : <RcaMessage key={i} role={m.role} content={m.content} />
+              )}
+              {rcaLoading && (
+                <RcaLoader label={
+                  rcaMessages.length === 0
+                    ? `Analysing ${midSessions.sessions.length} sessions…`
+                    : 'Fetching logs from Loki…'
+                } />
+              )}
+              <div ref={rcaChatEndRef} />
+            </div>
+
+            {/* Input bar */}
+            <div style={{ padding: '.85rem 1.25rem', borderTop: '1px solid #e2e8f0', background: '#fff', flexShrink: 0, display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+              <textarea
+                value={rcaInput}
+                onChange={e => setRcaInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                placeholder="Ask anything about this merchant… (Enter to send)"
+                rows={2}
+                disabled={rcaLoading}
+                style={{
+                  flex: 1, resize: 'none', border: '1px solid #e2e8f0', borderRadius: 8,
+                  padding: '8px 12px', fontSize: '.82rem', lineHeight: 1.5,
+                  outline: 'none', fontFamily: 'inherit', color: '#1e293b',
+                  background: rcaLoading ? '#f8fafc' : '#fff',
+                }}
+              />
+              <button
+                onClick={() => { if (rcaInput.trim() && !rcaLoading) sendRca(rcaInput.trim()); }}
+                disabled={!rcaInput.trim() || rcaLoading}
+                style={{
+                  padding: '8px 18px', background: '#2563eb', color: '#fff',
+                  border: 'none', borderRadius: 8, fontWeight: 600, fontSize: '.82rem',
+                  cursor: rcaInput.trim() && !rcaLoading ? 'pointer' : 'not-allowed',
+                  opacity: rcaInput.trim() && !rcaLoading ? 1 : 0.5, flexShrink: 0,
+                }}
+              >
+                Send
+              </button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </>
+  );
+}
+
 export default function App() {
   const [authToken,        setAuthToken]        = useState(() => _getStoredToken());
   const [authUser,         setAuthUser]         = useState(null);
@@ -100,6 +536,26 @@ export default function App() {
   const [soundboxInsights,         setSoundboxInsights]         = useState(null);
   const [globalSearch,             setGlobalSearch]             = useState('');
   const [globalTranscriptId,       setGlobalTranscriptId]       = useState(null);
+  const [midSessions,              setMidSessions]              = useState(null);  // {mid, sessions[]}
+  const [midLoading,               setMidLoading]               = useState(false);
+  const [midError,                 setMidError]                 = useState(null);
+  const [rcaMessages,              setRcaMessages]              = useState([]);    // [{role,content}]
+  const [rcaInput,                 setRcaInput]                 = useState('');
+  const [rcaLoading,               setRcaLoading]               = useState(false);
+  const rcaChatEndRef = useRef(null);
+
+  const handleGlobalSearch = (v) => {
+    const looksLikeMid = !v.includes('-') && !/^\d/.test(v);
+    if (looksLikeMid) {
+      setMidSessions(null); setMidError(null); setMidLoading(true);
+      axios.get(`${API_BASE}/helpdesk/sessions-by-mid/${encodeURIComponent(v)}`)
+        .then(res => setMidSessions({ mid: v, sessions: res.data }))
+        .catch(err => setMidError(err.response?.data?.detail || 'MID lookup failed.'))
+        .finally(() => setMidLoading(false));
+    } else {
+      setGlobalTranscriptId(v);
+    }
+  };
 
   // ── On mount: handle Google OAuth code or validate stored token ─────────────
   useEffect(() => {
@@ -305,17 +761,17 @@ export default function App() {
       <div style={{
         minHeight: '100vh', display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'center',
-        background: 'linear-gradient(135deg, #f1f5f9 0%, #e0e7ff 100%)',
+        background: 'linear-gradient(135deg, #f1f5f9 0%, #dbeafe 100%)',
         fontFamily: "'Inter', sans-serif",
       }}>
         <div style={{
           width: 56, height: 56, borderRadius: 14,
-          background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+          background: 'linear-gradient(135deg, #2563eb, #3b82f6)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           fontSize: '1.75rem', marginBottom: '1.25rem',
           boxShadow: '0 4px 14px rgba(99,102,241,.35)',
         }}>💡</div>
-        <div style={{ width: 36, height: 36, border: '3px solid #e0e7ff', borderTopColor: '#6366f1', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+        <div style={{ width: 36, height: 36, border: '3px solid #dbeafe', borderTopColor: '#2563eb', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
         <p style={{ marginTop: '1rem', color: '#64748b', fontSize: '.9rem' }}>Signing you in…</p>
         <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
       </div>
@@ -351,7 +807,7 @@ export default function App() {
               <img
                 src={authUser.picture}
                 alt={authUser.name}
-                style={{ width: 34, height: 34, borderRadius: '50%', border: '2px solid #e0e7ff' }}
+                style={{ width: 34, height: 34, borderRadius: '50%', border: '2px solid #dbeafe' }}
               />
             )}
             <div style={{ fontSize: '.8rem', lineHeight: 1.3 }}>
@@ -425,12 +881,14 @@ export default function App() {
             />
           </div>
 
-          {/* Session ID Search */}
+          {/* Session / Merchant ID Search */}
           <form
             onSubmit={e => {
               e.preventDefault();
               const v = globalSearch.trim();
-              if (v) { setGlobalTranscriptId(v); setGlobalSearch(''); }
+              if (!v) return;
+              setGlobalSearch('');
+              handleGlobalSearch(v);
             }}
             style={{ display: 'flex', alignItems: 'center', gap: '.4rem', flexShrink: 0, alignSelf: 'flex-start', marginTop: '.35rem' }}
           >
@@ -438,13 +896,13 @@ export default function App() {
               type="text"
               value={globalSearch}
               onChange={e => setGlobalSearch(e.target.value)}
-              placeholder="Search session ID…"
+              placeholder="Search Session / Merchant ID"
               style={{
                 padding: '.45rem .75rem', borderRadius: 8,
                 border: '1.5px solid #e2e8f0', fontSize: '.82rem',
                 outline: 'none', color: '#334155', width: 220,
               }}
-              onFocus={e => { e.currentTarget.style.borderColor = '#6366f1'; }}
+              onFocus={e => { e.currentTarget.style.borderColor = '#2563eb'; }}
               onBlur={e => { e.currentTarget.style.borderColor = '#e2e8f0'; }}
             />
             <button
@@ -452,7 +910,7 @@ export default function App() {
               disabled={!globalSearch.trim()}
               style={{
                 padding: '.45rem .65rem', borderRadius: 8, border: 'none',
-                background: globalSearch.trim() ? '#6366f1' : '#e2e8f0',
+                background: globalSearch.trim() ? '#2563eb' : '#e2e8f0',
                 color: globalSearch.trim() ? '#fff' : '#94a3b8',
                 fontSize: '1rem', cursor: globalSearch.trim() ? 'pointer' : 'not-allowed',
                 lineHeight: 1,
@@ -471,6 +929,53 @@ export default function App() {
             showEval={true}
             recordingPath="ivr"
             onClose={() => setGlobalTranscriptId(null)}
+            onSearch={(v) => { setGlobalTranscriptId(null); handleGlobalSearch(v); }}
+          />
+        )}
+
+        {/* MID lookup — loading spinner */}
+        {midLoading && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)',
+            zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}>
+            <div style={{ background: '#fff', borderRadius: 12, padding: '2rem 2.5rem', textAlign: 'center', color: '#64748b' }}>
+              <style>{`@keyframes appSpin { to { transform: rotate(360deg); } }`}</style>
+              <div style={{ width: 32, height: 32, border: '3px solid #e2e8f0', borderTopColor: '#2563eb', borderRadius: '50%', animation: 'appSpin .7s linear infinite', margin: '0 auto 1rem' }} />
+              Looking up sessions for MID…
+            </div>
+          </div>
+        )}
+
+        {/* MID lookup — error */}
+        {midError && (
+          <div style={{
+            position: 'fixed', inset: 0, background: 'rgba(15,23,42,.45)',
+            zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }} onClick={() => setMidError(null)}>
+            <div style={{ background: '#fff', borderRadius: 12, padding: '1.5rem 2rem', color: '#dc2626', maxWidth: 360 }}>
+              <strong>MID lookup failed</strong><br/><span style={{ fontSize: '.85rem' }}>{midError}</span>
+              <div style={{ marginTop: '1rem', textAlign: 'right' }}>
+                <button onClick={() => setMidError(null)} style={{ padding: '4px 14px', borderRadius: 6, border: 'none', background: '#f1f5f9', cursor: 'pointer' }}>Close</button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* MID lookup — full-width split drawer */}
+        {midSessions && (
+          <MidDrawer
+            midSessions={midSessions}
+            onClose={() => { setMidSessions(null); setRcaMessages([]); setRcaInput(''); }}
+            onViewTranscript={(sid) => { setGlobalTranscriptId(sid); setMidSessions(null); setRcaMessages([]); }}
+            rcaMessages={rcaMessages}
+            setRcaMessages={setRcaMessages}
+            rcaInput={rcaInput}
+            setRcaInput={setRcaInput}
+            rcaLoading={rcaLoading}
+            setRcaLoading={setRcaLoading}
+            rcaChatEndRef={rcaChatEndRef}
+            onSearch={(v) => { setMidSessions(null); setRcaMessages([]); setRcaInput(''); handleGlobalSearch(v); }}
           />
         )}
 

@@ -21,7 +21,7 @@ const CHANNEL_COLORS = {
   app_store:    '#d1fae5',
   social_media: '#dbeafe',
   helpdesk:     '#fef9c3',
-  email:        '#ede9fe',
+  email:        '#dbeafe',
   chatbot:      '#e0f2fe',
 };
 
@@ -94,7 +94,7 @@ export default function FeedbackTable({ items }) {
                   <td>
                     {item.issue_label ? (
                       <span style={{
-                        background: '#e0e7ff', color: '#4338ca',
+                        background: '#dbeafe', color: '#1d4ed8',
                         borderRadius: 4, padding: '2px 8px',
                         fontSize: '.72rem', fontWeight: 600, whiteSpace: 'nowrap',
                       }}>
