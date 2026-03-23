@@ -19,6 +19,7 @@ import FeedbackTable      from './components/FeedbackTable';
 import CampaignDashboard  from './components/CampaignDashboard';
 import Login              from './components/Login';
 import TranscriptModal    from './components/TranscriptModal';
+import HelpBot            from './components/HelpBot';
 
 const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
 
@@ -182,7 +183,7 @@ function RcaErrorBubble({ content, onRetry, soft }) {
 }
 
 function MidDrawer({ midSessions, onClose, onViewTranscript, rcaMessages, setRcaMessages, rcaInput, setRcaInput, rcaLoading, setRcaLoading, rcaChatEndRef, onSearch }) {
-  const API = 'http://localhost:8000/api';
+  const API = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
   const autoFired   = useRef(false);
   const lastMsgRef  = useRef('__auto__');
   const [midSearchVal, setMidSearchVal] = useState('');
@@ -925,7 +926,7 @@ export default function App() {
         {globalTranscriptId && (
           <TranscriptModal
             ticketId={globalTranscriptId}
-            helpdeskType="merchant"
+            helpdeskType={globalTranscriptId.startsWith('3-') ? 'customer' : 'merchant'}
             showEval={true}
             recordingPath="ivr"
             onClose={() => setGlobalTranscriptId(null)}
@@ -1112,6 +1113,9 @@ export default function App() {
           </div>
         )}
       </main>
+
+      {/* Help Bot — floating on all pages */}
+      <HelpBot />
     </div>
   );
 }

@@ -41,6 +41,59 @@ function cleanBot(text) {
   return text.replace(/\n?\{"name":"proactive_issues_displayList"[\s\S]*?\}\s*\]/g, '').trim();
 }
 
+function isToolMsg(content) {
+  if (!content) return false;
+  const t = content.trim();
+  return t.startsWith('{') || t.startsWith('[{');
+}
+
+function ToolMessage({ content, time }) {
+  const [open, setOpen] = useState(false);
+  let parsed = null;
+  let label = 'Tool';
+  try {
+    parsed = JSON.parse(content.trim());
+    label = parsed?.name || parsed?.type || parsed?.function_name || 'Tool';
+  } catch { label = 'Tool'; }
+
+  return (
+    <div style={{ alignSelf: 'flex-start', maxWidth: '88%' }}>
+      <div style={{ fontSize: '.65rem', color: '#94a3b8', marginBottom: '.2rem' }}>
+        ⚙️ Tool · {time}
+      </div>
+      <div style={{ border: '1px solid #e0e7ff', borderRadius: '8px 8px 8px 2px', overflow: 'hidden' }}>
+        <button
+          onClick={() => setOpen(o => !o)}
+          style={{
+            width: '100%', background: '#eef2ff', border: 'none', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', gap: '.4rem',
+            padding: '.3rem .65rem', textAlign: 'left',
+          }}
+        >
+          <span style={{
+            fontSize: '.67rem', fontWeight: 700, fontFamily: 'monospace',
+            color: '#4338ca', background: '#e0e7ff', borderRadius: 3,
+            padding: '1px 6px', flexShrink: 0,
+          }}>{label}</span>
+          <span style={{ fontSize: '.67rem', color: '#94a3b8', flex: 1 }}>{open ? 'hide' : 'show payload'}</span>
+          <span style={{ fontSize: '.68rem', color: '#94a3b8',
+            transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}>▾</span>
+        </button>
+        {open && (
+          <pre style={{
+            margin: 0, padding: '.55rem .75rem',
+            background: '#f5f3ff', fontSize: '.71rem', color: '#3730a3',
+            lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+            borderTop: '1px solid #e0e7ff', maxHeight: 260, overflowY: 'auto',
+          }}>
+            {parsed ? JSON.stringify(parsed, null, 2) : content}
+          </pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Listen button (IVR / Soundbox / Outbound recording) ──────────────────────
 
 function ListenButton({ ticketId, createdAt, recordingPath }) {
@@ -589,6 +642,7 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
   const [fnError,     setFnError]     = useState(null);
   const [rightTab,    setRightTab]    = useState('timeline');   // 'data' | 'timeline'
   const [searchVal,   setSearchVal]   = useState('');
+  const [showTools,   setShowTools]   = useState(false);
   const bodyRef = useRef(null);
 
   useEffect(() => {
@@ -621,7 +675,9 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
       .finally(() => setFnLoading(false));
   }, [ticketId]);
 
-  const visible = messages.filter(m => !m.hidden);
+  const allVisible  = messages.filter(m => !m.hidden);
+  const toolCount   = allVisible.filter(m => isToolMsg(m.content)).length;
+  const visible     = showTools ? allVisible : allVisible.filter(m => !isToolMsg(m.content));
 
   return (
     /* ── Backdrop ── */
@@ -732,15 +788,29 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
             <div style={{ padding:'.6rem 1rem', borderBottom:'1px solid #f1f5f9',
               background:'#f8fafc', flexShrink:0,
               display:'flex', alignItems:'center', justifyContent:'space-between' }}>
-              <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '.6rem' }}>
                 <span style={{ fontSize:'.78rem', fontWeight:700, color:'#64748b',
                   textTransform:'uppercase', letterSpacing:'.06em' }}>
                   💬 Chat Transcript
                 </span>
                 {!txLoading && (
-                  <span style={{ fontSize:'.72rem', color:'#94a3b8', marginLeft:'.5rem' }}>
-                    {visible.length} messages
+                  <span style={{ fontSize:'.72rem', color:'#94a3b8' }}>
+                    {visible.length} msgs
                   </span>
+                )}
+                {!txLoading && toolCount > 0 && (
+                  <button
+                    onClick={() => setShowTools(o => !o)}
+                    style={{
+                      fontSize: '.67rem', fontWeight: 600, cursor: 'pointer',
+                      padding: '2px 8px', borderRadius: 4,
+                      background: showTools ? '#e0e7ff' : '#f1f5f9',
+                      color: showTools ? '#4338ca' : '#64748b',
+                      border: `1px solid ${showTools ? '#c7d2fe' : '#e2e8f0'}`,
+                    }}
+                  >
+                    ⚙️ Tools ({toolCount}) {showTools ? '▾ shown' : '▸ hidden'}
+                  </button>
                 )}
               </div>
               <ListenButton
@@ -775,6 +845,9 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
               )}
 
               {visible.map(msg => {
+                if (isToolMsg(msg.content)) {
+                  return <ToolMessage key={msg.message_id} content={msg.content} time={fmt(msg.created_at)} />;
+                }
                 const { label, bg, color, isUser } = roleMeta(msg.role);
                 return (
                   <div key={msg.message_id}

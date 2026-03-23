@@ -26,6 +26,7 @@ from ingestion.aggregator import aggregate_feedback, get_channel_sample_counts
 from analysis.clustering import categorise_feedback
 from analysis.insights import generate_insights
 from ingestion.trino_helpdesk import fetch_helpdesk_insights, fetch_transcript, fetch_master_data, fetch_eval, fetch_function_calls, fetch_session_lookup, fetch_sessions_by_mid
+from ingestion.helpbot import helpbot_chat
 from ingestion.loki import fetch_session_timeline
 from ingestion.trino_campaigns import fetch_campaign_list, fetch_campaign_analysis, fetch_ivr_insights, fetch_soundbox_insights
 from models import TranscriptMessage, MasterDataResponse, EvalResponse
@@ -789,6 +790,16 @@ def rca_chat(req: RcaChatRequest):
         raise HTTPException(status_code=500, detail=f"RCA Bot LLM error: {e}")
 
     return {"answer": answer}
+
+
+class HelpBotRequest(_BaseModel):
+    message: str
+    history: List[Dict[str, str]] = []
+
+@router.post("/helpbot/chat", tags=["helpbot"])
+def helpbot_chat_endpoint(body: HelpBotRequest):
+    """Natural language → Trino SQL → structured results."""
+    return helpbot_chat(body.message, body.history)
 
 
 @router.get("/feedback", response_model=List[FeedbackItem], tags=["feedback"])
