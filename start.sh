@@ -19,7 +19,7 @@ FRONTEND_PORT="${FRONTEND_PORT:-3011}"
 
 echo "==> Starting backend on port $BACKEND_PORT ..."
 cd "$SCRIPT_DIR/backend"
-uvicorn api.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --workers 2 &
+/home/ubuntu/miniconda/envs/cst_feedback/bin/uvicorn api.main:app --host 0.0.0.0 --port "$BACKEND_PORT" --workers 2 &
 BACKEND_PID=$!
 
 echo "==> Starting frontend on port $FRONTEND_PORT ..."
