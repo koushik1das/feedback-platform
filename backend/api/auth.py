@@ -22,8 +22,8 @@ auth_router = APIRouter()
 # ── Config (override via environment variables) ───────────────────────────────
 GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID",     "")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "")
-GOOGLE_REDIRECT_URI  = os.getenv("GOOGLE_REDIRECT_URI",  "http://localhost:3000/auth/callback")
-FRONTEND_URL         = os.getenv("FRONTEND_URL",          "http://localhost:3000")
+GOOGLE_REDIRECT_URI  = os.getenv("GOOGLE_REDIRECT_URI",  "http://localhost:3011/auth/callback")
+FRONTEND_URL         = os.getenv("FRONTEND_URL",          "http://localhost:3011")
 
 JWT_SECRET    = os.getenv("JWT_SECRET", secrets.token_hex(32))   # set a fixed value in .env for prod
 JWT_ALGORITHM = "HS256"

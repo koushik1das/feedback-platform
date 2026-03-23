@@ -30,5 +30,3 @@ frontend/node_modules/
 # Claude local settings (may contain allowed bash commands with credentials)
 .claude/settings.local.json
 
-
-start.sh

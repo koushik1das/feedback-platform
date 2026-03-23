@@ -2,7 +2,8 @@
 FastAPI application entry point.
 
 Start with:
-    uvicorn api.main:app --reload --port 8000
+    uvicorn api.main:app --host 0.0.0.0 --port 8081
+    (for development add --reload)
 """
 
 from pathlib import Path
@@ -27,10 +28,14 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# Allow the React dev server (port 3000) and any other origin in development
+# CORS — set CORS_ORIGINS in .env to restrict (comma-separated).
+# Defaults to ["*"] for development; tighten for production.
+_raw_origins = os.getenv("CORS_ORIGINS", "*")
+_origins = [o.strip() for o in _raw_origins.split(",")] if _raw_origins != "*" else ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # Restrict to specific domains in production
+    allow_origins=_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

@@ -2,8 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import axios from 'axios';
-
-const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
+import { API_BASE } from '../config';
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 

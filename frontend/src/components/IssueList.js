@@ -7,8 +7,7 @@
 import React, { useState, useCallback } from 'react';
 import axios from 'axios';
 import TranscriptModal from './TranscriptModal';
-
-const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
+import { API_BASE } from '../config';
 
 const COLORS = [
   '#2563eb', '#3b82f6', '#ec4899',

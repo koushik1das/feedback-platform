@@ -20,8 +20,7 @@ import CampaignDashboard  from './components/CampaignDashboard';
 import Login              from './components/Login';
 import TranscriptModal    from './components/TranscriptModal';
 import HelpBot            from './components/HelpBot';
-
-const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
+import { API_BASE }       from './config';
 
 const APP_LABELS = {
   'net.one97.paytm':    'Paytm',
@@ -183,7 +182,7 @@ function RcaErrorBubble({ content, onRetry, soft }) {
 }
 
 function MidDrawer({ midSessions, onClose, onViewTranscript, rcaMessages, setRcaMessages, rcaInput, setRcaInput, rcaLoading, setRcaLoading, rcaChatEndRef, onSearch }) {
-  const API = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
+  const API = API_BASE;
   const autoFired   = useRef(false);
   const lastMsgRef  = useRef('__auto__');
   const [midSearchVal, setMidSearchVal] = useState('');

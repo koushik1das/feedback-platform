@@ -1,6 +1,5 @@
 import React from 'react';
-
-const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
+import { API_BASE } from '../config';
 
 export default function Login({ error }) {
   return (

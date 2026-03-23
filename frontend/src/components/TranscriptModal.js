@@ -9,8 +9,7 @@ import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import SessionTimeline from './SessionTimeline';
-
-const API_BASE = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
+import { API_BASE } from '../config';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
