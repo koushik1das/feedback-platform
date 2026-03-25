@@ -1316,6 +1316,266 @@ FROM final
 
 ---
 
+## 13. Expected Query Types — Patterns & Templates
+
+This section defines every common question type the HelpBot must handle, with the
+exact CTE structure to use for each. When a user asks a question, match it to the
+closest type here and use the corresponding pattern as the starting point.
+
+---
+
+### Type 1 — Session Funnel (counts + rates, no grouping)
+
+**Trigger phrases:** "how many sessions", "total sessions", "active sessions",
+"bounce rate", "how many were analyzed", "escalation rate", "overall stats"
+
+**CTEs needed:** `session_data` + `messages_data` + `grouped_sess` + optionally
+`feedback`, `devrev`, `feedback_status`
+
+**Output columns:** `total_sessions`, `active_sessions`, `bounced_sessions`,
+`bounce_pct`, `analyzed_sessions`, `analyzed_pct`, `escalated_sessions`,
+`escalation_pct`
+
+```sql
+WITH session_data AS (...),
+messages_data AS (...),
+grouped_sess AS (...),
+feedback AS (...),
+devrev AS (...)
+SELECT
+    COUNT(DISTINCT s.id)                                                        AS total_sessions,
+    COUNT(DISTINCT CASE WHEN g.user_msg >= 1 THEN s.id END)                    AS active_sessions,
+    COUNT(DISTINCT CASE WHEN g.user_msg = 0  THEN s.id END)                    AS bounced_sessions,
+    ROUND(COUNT(DISTINCT CASE WHEN g.user_msg = 0 THEN s.id END) * 100.0
+        / NULLIF(COUNT(DISTINCT s.id), 0), 2)                                  AS bounce_pct,
+    COUNT(DISTINCT CASE WHEN f.ticket_id IS NOT NULL THEN s.id END)            AS analyzed_sessions,
+    ROUND(COUNT(DISTINCT CASE WHEN f.ticket_id IS NOT NULL THEN s.id END) * 100.0
+        / NULLIF(COUNT(DISTINCT CASE WHEN g.user_msg >= 1 THEN s.id END), 0), 2) AS analyzed_pct,
+    COUNT(DISTINCT CASE WHEN d.fd_ticket_id IS NOT NULL THEN s.id END)         AS escalated_sessions,
+    ROUND(COUNT(DISTINCT CASE WHEN d.fd_ticket_id IS NOT NULL THEN s.id END) * 100.0
+        / NULLIF(COUNT(DISTINCT CASE WHEN g.user_msg >= 1 THEN s.id END), 0), 2) AS escalation_pct
+FROM session_data s
+LEFT JOIN grouped_sess g ON s.id = g.ticket_id
+LEFT JOIN feedback f     ON s.id = f.ticket_id
+LEFT JOIN devrev d       ON s.id = d.id
+```
+
+---
+
+### Type 2 — Daily Trend (any metric broken down by date)
+
+**Trigger phrases:** "daily", "day-wise", "per day", "last N days trend",
+"show me by date", "date-wise breakdown"
+
+**CTEs needed:** same as Type 1 but final SELECT groups by `DATE(s.created_at)`
+
+**Key rule:** Always `GROUP BY 1` on `DATE(s.created_at)`, `ORDER BY 1 DESC`
+
+```sql
+SELECT
+    DATE(s.created_at)                                                          AS session_date,
+    COUNT(DISTINCT s.id)                                                        AS total_sessions,
+    COUNT(DISTINCT CASE WHEN g.user_msg >= 1 THEN s.id END)                    AS active_sessions,
+    COUNT(DISTINCT CASE WHEN d.fd_ticket_id IS NOT NULL THEN s.id END)         AS escalated_sessions,
+    ROUND(COUNT(DISTINCT CASE WHEN d.fd_ticket_id IS NOT NULL THEN s.id END) * 100.0
+        / NULLIF(COUNT(DISTINCT CASE WHEN g.user_msg >= 1 THEN s.id END), 0), 2) AS escalation_pct,
+    COALESCE(ROUND(AVG(CASE WHEN f.eval_score IS NOT NULL THEN f.eval_score END) * 100.0, 2), 0) AS avg_eval_score
+FROM session_data s
+LEFT JOIN grouped_sess g ON s.id = g.ticket_id
+LEFT JOIN feedback f     ON s.id = f.ticket_id
+LEFT JOIN devrev d       ON s.id = d.id
+GROUP BY 1
+ORDER BY 1 DESC
+```
+
+---
+
+### Type 3 — L1 Issue Breakdown WITH Multiple Metrics Per Issue
+
+**Trigger phrases:** "top issues", "top problems", "issue categories with...",
+"breakdown by issue", "show issues with their session count / ticket count / eval score"
+
+This is the most common complex query type. It groups by `out_key_problem_desc`
+and computes multiple per-issue metrics. Requires a `totals` CTE for `%` columns.
+
+**CTEs needed:** `session_data` + `messages_data` + `grouped_sess` + `feedback` +
+optionally `devrev` + `totals`
+
+```sql
+WITH session_data AS (...),
+messages_data AS (...),
+grouped_sess AS (...),
+feedback AS (
+    SELECT ticket_id, out_key_problem_desc, out_key_problem_sub_desc,
+           TRY_CAST(eval_score AS DOUBLE) AS eval_score
+    FROM hive.{schema}.feedback_complete_analyzed_data_snapshot_v3
+    WHERE dl_last_updated >= DATE '2025-01-01'
+      AND ticket_id IN (SELECT id FROM session_data)
+),
+devrev AS (...),
+totals AS (
+    -- Pre-compute denominator for % columns (NEVER use OVER() with GROUP BY)
+    SELECT COUNT(DISTINCT s.id) AS total_analyzed
+    FROM session_data s
+    JOIN grouped_sess g ON s.id = g.ticket_id
+    JOIN feedback f     ON s.id = f.ticket_id
+    WHERE g.user_msg >= 1
+      AND f.out_key_problem_desc IS NOT NULL
+      AND f.out_key_problem_desc NOT IN ('Others', '', ' ', 'NA', 'None')
+)
+SELECT
+    f.out_key_problem_desc                                                       AS issue_category,
+    COUNT(DISTINCT CASE WHEN g.user_msg >= 1 THEN s.id END)                     AS active_sessions,
+    COUNT(DISTINCT CASE WHEN d.fd_ticket_id IS NOT NULL THEN s.id END)          AS ticket_created,
+    ROUND(COUNT(DISTINCT CASE WHEN d.fd_ticket_id IS NOT NULL THEN s.id END) * 100.0
+        / NULLIF(COUNT(DISTINCT CASE WHEN g.user_msg >= 1 THEN s.id END), 0), 2) AS ticket_creation_pct,
+    COALESCE(ROUND(AVG(CASE WHEN f.eval_score IS NOT NULL THEN f.eval_score END) * 100.0, 2), 0) AS avg_eval_score,
+    ROUND(COUNT(DISTINCT CASE WHEN g.user_msg >= 1 THEN s.id END) * 100.0
+        / NULLIF(t.total_analyzed, 0), 2)                                        AS pct_of_total
+FROM session_data s
+LEFT JOIN grouped_sess g ON s.id = g.ticket_id
+JOIN      feedback f     ON s.id = f.ticket_id
+LEFT JOIN devrev d       ON s.id = d.id
+CROSS JOIN totals t
+WHERE f.out_key_problem_desc IS NOT NULL
+  AND f.out_key_problem_desc NOT IN ('Others', '', ' ', 'NA', 'None')
+GROUP BY 1, t.total_analyzed
+ORDER BY 2 DESC
+LIMIT 10
+```
+
+---
+
+### Type 4 — Entity Comparison (multiple entities side by side)
+
+**Trigger phrases:** "compare entities", "entity-wise", "across verticals",
+"settlement vs device", "all MHD entities"
+
+**Key rule:** Remove the `cst_entity = '...'` filter from `session_data`, add it
+to the SELECT and GROUP BY instead.
+
+```sql
+session_data AS (
+    SELECT id, created_at, cst_entity
+    FROM hive.mhd_crm_cst.support_ticket_details_snapshot_v3
+    WHERE dl_last_updated >= DATE '2025-01-01'
+      AND DATE(created_at) BETWEEN DATE '{since}' AND DATE '{until}'
+      -- NO entity filter here — comparing all entities
+),
+...
+SELECT
+    s.cst_entity,
+    COUNT(DISTINCT s.id)                                            AS total_sessions,
+    COUNT(DISTINCT CASE WHEN g.user_msg >= 1 THEN s.id END)        AS active_sessions,
+    ...
+GROUP BY 1
+ORDER BY 2 DESC
+```
+
+---
+
+### Type 5 — MSAT / Feedback Satisfaction
+
+**Trigger phrases:** "MSAT", "happy/sad", "customer satisfaction", "feedback score",
+"how many were happy", "satisfaction rate"
+
+**CTEs needed:** `session_data` + `messages_data` + `grouped_sess` + `feedback_status`
+
+```sql
+feedback_status AS (
+    SELECT DISTINCT ticket_id,
+        CASE
+            WHEN feedback_status = '2' THEN 'Happy'
+            WHEN feedback_status = '3' THEN 'Sad'
+            WHEN feedback_status = '4' THEN 'Skip'
+            ELSE 'NULL'
+        END AS feedback_status
+    FROM hive.{schema}.ticket_meta_snapshot_v3
+    WHERE dl_last_updated >= DATE '2025-01-01'
+      AND ticket_id IN (SELECT id FROM session_data)
+)
+SELECT
+    COUNT(DISTINCT CASE WHEN g.user_msg >= 1 THEN s.id END)                    AS active_sessions,
+    COUNT(DISTINCT CASE WHEN z.feedback_status = 'Happy' THEN s.id END)        AS happy,
+    COUNT(DISTINCT CASE WHEN z.feedback_status = 'Sad'   THEN s.id END)        AS sad,
+    COUNT(DISTINCT CASE WHEN z.feedback_status = 'Skip'  THEN s.id END)        AS skipped,
+    ROUND(COUNT(DISTINCT CASE WHEN z.feedback_status = 'Happy' THEN s.id END) * 100.0
+        / NULLIF(COUNT(DISTINCT CASE WHEN z.feedback_status IN ('Happy','Sad') THEN s.id END), 0), 2) AS msat_score
+FROM session_data s
+LEFT JOIN grouped_sess    g ON s.id = g.ticket_id
+LEFT JOIN feedback_status z ON s.id = z.ticket_id
+```
+
+---
+
+### Type 6 — Eval Quality Metrics (scores from metrics_json)
+
+**Trigger phrases:** "eval score", "empathy score", "resolution rate",
+"response relevance", "quality metrics", "bot quality"
+
+**CTEs needed:** `session_data` + `messages_data` + `grouped_sess` + `feedback`
+
+Always use `TRY_CAST`, multiply by `100.0`, and `COALESCE(..., 0)`:
+
+```sql
+feedback AS (
+    SELECT ticket_id,
+           TRY_CAST(eval_score AS DOUBLE) AS eval_score,
+           TRY_CAST(json_extract_scalar(metrics_json, '$.empathy_score') AS DOUBLE)            AS empathy_score,
+           TRY_CAST(json_extract_scalar(metrics_json, '$.resolution_achieved') AS DOUBLE)      AS resolution_achieved,
+           TRY_CAST(json_extract_scalar(metrics_json, '$.response_relevance_score') AS DOUBLE) AS response_relevance_score
+    FROM hive.{schema}.feedback_complete_analyzed_data_snapshot_v3
+    WHERE dl_last_updated >= DATE '2025-01-01'
+      AND ticket_id IN (SELECT id FROM session_data)
+)
+SELECT
+    COUNT(DISTINCT CASE WHEN g.user_msg >= 1 THEN s.id END)                     AS active_sessions,
+    COUNT(DISTINCT CASE WHEN f.ticket_id IS NOT NULL THEN s.id END)             AS analyzed_sessions,
+    COALESCE(ROUND(AVG(f.eval_score)              * 100.0, 2), 0)               AS avg_eval_score,
+    COALESCE(ROUND(AVG(f.empathy_score)           * 100.0, 2), 0)               AS avg_empathy_score,
+    COALESCE(ROUND(AVG(f.resolution_achieved)     * 100.0, 2), 0)               AS avg_resolution_rate,
+    COALESCE(ROUND(AVG(f.response_relevance_score)* 100.0, 2), 0)               AS avg_response_relevance
+FROM session_data s
+LEFT JOIN grouped_sess g ON s.id = g.ticket_id
+LEFT JOIN feedback f     ON s.id = f.ticket_id
+```
+
+---
+
+### Type 7 — Merchant ID (MID) Lookup
+
+**Trigger phrases:** "sessions for MID", "merchant ID", "for merchant X",
+"show me sessions for 12345678"
+
+**CTEs needed:** `session_data` (filtered by `merchant_id`) — no other CTEs needed
+unless specific metrics asked for
+
+```sql
+session_data AS (
+    SELECT id, created_at, cst_entity, merchant_id
+    FROM hive.mhd_crm_cst.support_ticket_details_snapshot_v3
+    WHERE dl_last_updated >= DATE '2025-01-01'
+      AND DATE(created_at) BETWEEN DATE '{since}' AND DATE '{until}'
+      AND merchant_id = '{mid}'           -- MID filter goes here
+)
+```
+
+---
+
+### Type 8 — Combined Multi-Metric Report (Type 1 + Type 3 together)
+
+**Trigger phrases:** "full report", "give me everything", "top issues with their
+sessions, ticket count, % and eval score"
+
+This is the query type that failed in the screenshot above. It combines issue-level
+grouping (Type 3) with multiple metrics. Always use the Type 3 template exactly —
+the `totals` CTE + `CROSS JOIN` is mandatory.
+
+**The model must NOT try to compute percentages using window functions here.**
+Use the `totals` CTE pattern and include `t.total_analyzed` in `GROUP BY`.
+
+---
+
 ## 9. Open Items / To Be Documented
 
 - [ ] `plugservice_response` unwrapping pattern per vertical (exact JSON structure varies — needs per-vertical examples)

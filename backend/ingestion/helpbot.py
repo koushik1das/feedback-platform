@@ -34,7 +34,7 @@ MAX_ROWS = 500
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _KB_FILES = [
     _REPO_ROOT / "CST_DATA_GUIDE.md",
-    _REPO_ROOT / "feedback-platform" / "master_queries.sql",
+    _REPO_ROOT / "master_queries.sql",
 ]
 
 
@@ -227,7 +227,7 @@ def helpbot_chat(message: str, history: List[Dict[str, str]]) -> Dict[str, Any]:
     try:
         resp = client.chat.completions.create(
             model=TFY_MODEL,
-            max_tokens=2048,
+            max_tokens=4096,
             messages=messages,
         )
         raw = resp.choices[0].message.content.strip()
