@@ -3,8 +3,301 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import axios from 'axios';
 import { API_BASE } from '../config';
+import {
+  BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+} from 'recharts';
 
-// ── Sub-components ────────────────────────────────────────────────────────────
+// ── Colour palette (Paytm blue theme) ─────────────────────────────────────────
+const CHART_COLORS = [
+  '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd',
+  '#1d4ed8', '#0ea5e9', '#06b6d4', '#0284c7',
+];
+
+// ── Chart auto-detection helpers ──────────────────────────────────────────────
+
+function isDateLike(val) {
+  if (typeof val !== 'string') return false;
+  return /^\d{4}-\d{2}(-\d{2})?$/.test(val);
+}
+
+function isNumeric(val) {
+  return val !== null && val !== undefined && val !== '' && !isNaN(Number(val));
+}
+
+/**
+ * Decide best chart type from column names + row data.
+ * Returns: "bar" | "line" | "pie" | null (no chart possible)
+ */
+function detectChartConfig(columns, rows) {
+  if (!rows || rows.length === 0 || columns.length < 2) return null;
+
+  const labelCol = columns[0];
+  const numericCols = columns.slice(1).filter((_, ci) =>
+    rows.slice(0, 5).some(r => isNumeric(r[ci + 1]))
+  );
+  if (numericCols.length === 0) return null;
+
+  // Line chart: first column looks like a date
+  const firstVals = rows.slice(0, 5).map(r => r[0]);
+  if (firstVals.every(v => isDateLike(String(v)))) {
+    return { type: 'line', labelCol, numericCols };
+  }
+
+  // Pie chart: exactly 2 columns, ≤ 12 rows
+  if (columns.length === 2 && rows.length <= 12) {
+    return { type: 'pie', labelCol, numericCols };
+  }
+
+  // Default: bar
+  return { type: 'bar', labelCol, numericCols };
+}
+
+function buildChartData(columns, rows) {
+  return rows.map(row => {
+    const obj = {};
+    columns.forEach((col, i) => {
+      obj[col] = isNumeric(row[i]) ? Number(row[i]) : row[i];
+    });
+    return obj;
+  });
+}
+
+// ── Chart Components ──────────────────────────────────────────────────────────
+
+const MAX_LABEL_CHARS = 22;
+
+function YAxisTick({ x, y, payload, setTooltip }) {
+  const full = String(payload?.value ?? '');
+  const clipped = full.length > MAX_LABEL_CHARS;
+  const display = clipped ? full.slice(0, MAX_LABEL_CHARS) + '…' : full;
+  return (
+    <g transform={`translate(${x},${y})`}>
+      <text
+        x={0} y={0} dy={4} textAnchor="end" fill="#64748b" fontSize={11}
+        onMouseEnter={clipped ? (e) => setTooltip({ text: full, x: e.clientX, y: e.clientY }) : undefined}
+        onMouseMove={clipped ? (e) => setTooltip({ text: full, x: e.clientX, y: e.clientY }) : undefined}
+        onMouseLeave={clipped ? () => setTooltip(null) : undefined}
+      >
+        {display}
+      </text>
+    </g>
+  );
+}
+
+function LabelTooltip({ tooltip }) {
+  if (!tooltip) return null;
+  return (
+    <div style={{
+      position: 'fixed',
+      left: tooltip.x + 12,
+      top: tooltip.y - 28,
+      background: '#1e293b',
+      color: '#fff',
+      fontSize: '.72rem',
+      padding: '4px 9px',
+      borderRadius: 6,
+      pointerEvents: 'none',
+      zIndex: 9999,
+      whiteSpace: 'nowrap',
+      boxShadow: '0 2px 8px rgba(0,0,0,.2)',
+    }}>
+      {tooltip.text}
+    </div>
+  );
+}
+
+function HelpBotBarChart({ columns, rows, cfg }) {
+  const [activeCol, setActiveCol] = useState(cfg.numericCols[0]);
+  const [tooltip, setTooltip] = useState(null);
+  const data = buildChartData(columns, rows);
+  const maxLabel = Math.max(...data.map(d => String(d[cfg.labelCol] ?? '').length));
+  const yWidth = Math.min(Math.max(Math.min(maxLabel, MAX_LABEL_CHARS) * 7 + 16, 80), 200);
+  const chartHeight = Math.max(200, data.length * 36 + 40);
+
+  return (
+    <div>
+      <LabelTooltip tooltip={tooltip} />
+      {/* Metric selector — only shown when multiple numeric cols */}
+      {cfg.numericCols.length > 1 && (
+        <div style={{ display: 'flex', gap: '.3rem', flexWrap: 'wrap', padding: '.3rem .5rem .1rem' }}>
+          {cfg.numericCols.map((col, i) => (
+            <button
+              key={col}
+              onClick={() => setActiveCol(col)}
+              style={{
+                fontSize: '.69rem', fontWeight: 600,
+                padding: '2px 9px', borderRadius: 5, cursor: 'pointer',
+                background: activeCol === col ? CHART_COLORS[i % CHART_COLORS.length] : 'transparent',
+                color: activeCol === col ? '#fff' : '#64748b',
+                border: activeCol === col
+                  ? `1px solid ${CHART_COLORS[i % CHART_COLORS.length]}`
+                  : '1px solid #e2e8f0',
+                transition: 'all .12s',
+              }}
+            >
+              {col}
+            </button>
+          ))}
+        </div>
+      )}
+      <ResponsiveContainer width="100%" height={chartHeight}>
+        <BarChart
+          layout="vertical"
+          data={data}
+          margin={{ top: 8, right: 24, left: 8, bottom: 8 }}
+        >
+          <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
+          <XAxis type="number" tick={{ fontSize: 11, fill: '#64748b' }} tickFormatter={v => Number(v).toLocaleString()} />
+          <YAxis
+            type="category"
+            dataKey={cfg.labelCol}
+            tick={<YAxisTick setTooltip={setTooltip} />}
+            width={yWidth}
+          />
+          <Tooltip
+            contentStyle={{ fontSize: '.75rem', borderRadius: 8, border: '1px solid #e2e8f0' }}
+            formatter={(val) => [Number(val).toLocaleString(), activeCol]}
+          />
+          <Bar
+            dataKey={activeCol}
+            fill={CHART_COLORS[cfg.numericCols.indexOf(activeCol) % CHART_COLORS.length]}
+            radius={[0, 3, 3, 0]}
+          />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function HelpBotLineChart({ columns, rows, cfg }) {
+  const data = buildChartData(columns, rows);
+  return (
+    <ResponsiveContainer width="100%" height={260}>
+      <LineChart data={data} margin={{ top: 10, right: 16, left: 0, bottom: 20 }}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+        <XAxis dataKey={cfg.labelCol} tick={{ fontSize: 11, fill: '#64748b' }} />
+        <YAxis tick={{ fontSize: 11, fill: '#64748b' }} width={45} />
+        <Tooltip
+          contentStyle={{ fontSize: '.75rem', borderRadius: 8, border: '1px solid #e2e8f0' }}
+          formatter={(val) => [Number(val).toLocaleString(), '']}
+        />
+        {cfg.numericCols.length > 1 && <Legend wrapperStyle={{ fontSize: '.72rem' }} />}
+        {cfg.numericCols.map((col, i) => (
+          <Line
+            key={col} type="monotone" dataKey={col}
+            stroke={CHART_COLORS[i % CHART_COLORS.length]}
+            strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }}
+          />
+        ))}
+      </LineChart>
+    </ResponsiveContainer>
+  );
+}
+
+const RADIAN = Math.PI / 180;
+function PieLabel({ cx, cy, midAngle, innerRadius, outerRadius, percent, name }) {
+  if (percent < 0.05) return null;
+  const r = innerRadius + (outerRadius - innerRadius) * 0.55;
+  const x = cx + r * Math.cos(-midAngle * RADIAN);
+  const y = cy + r * Math.sin(-midAngle * RADIAN);
+  return (
+    <text x={x} y={y} fill="#fff" textAnchor="middle" dominantBaseline="central" fontSize={11} fontWeight={600}>
+      {`${(percent * 100).toFixed(0)}%`}
+    </text>
+  );
+}
+
+function HelpBotPieChart({ columns, rows, cfg }) {
+  const data = buildChartData(columns, rows).map(d => ({
+    name: String(d[cfg.labelCol] ?? ''),
+    value: Number(d[cfg.numericCols[0]]) || 0,
+  }));
+  return (
+    <ResponsiveContainer width="100%" height={260}>
+      <PieChart>
+        <Pie
+          data={data} cx="50%" cy="50%" outerRadius={95}
+          dataKey="value" nameKey="name"
+          labelLine={false} label={PieLabel}
+        >
+          {data.map((_, i) => (
+            <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+          ))}
+        </Pie>
+        <Tooltip
+          contentStyle={{ fontSize: '.75rem', borderRadius: 8, border: '1px solid #e2e8f0' }}
+          formatter={(val) => [Number(val).toLocaleString(), '']}
+        />
+        <Legend
+          wrapperStyle={{ fontSize: '.72rem', paddingTop: 8 }}
+          formatter={(val) => val.length > 22 ? val.slice(0, 22) + '…' : val}
+        />
+      </PieChart>
+    </ResponsiveContainer>
+  );
+}
+
+// ── ChartView ─────────────────────────────────────────────────────────────────
+
+function ChartView({ columns, rows }) {
+  const cfg = detectChartConfig(columns, rows);
+  const [chartType, setChartType] = useState(cfg?.type || 'bar');
+
+  if (!cfg) return null;
+
+  const availableTypes = [];
+  if (cfg.numericCols.length >= 1) availableTypes.push('bar', 'line');
+  if (columns.length === 2 && rows.length <= 12) availableTypes.push('pie');
+
+  const renderChart = () => {
+    if (chartType === 'line') return <HelpBotLineChart columns={columns} rows={rows} cfg={cfg} />;
+    if (chartType === 'pie' && columns.length === 2) return <HelpBotPieChart columns={columns} rows={rows} cfg={cfg} />;
+    return <HelpBotBarChart columns={columns} rows={rows} cfg={cfg} />;
+  };
+
+  const typeLabel = { bar: '📊 Bar', line: '📈 Line', pie: '🥧 Pie' };
+
+  return (
+    <div style={{
+      marginTop: '.65rem',
+      borderRadius: 10,
+      border: '1px solid #e2e8f0',
+      background: '#fff',
+      overflow: 'hidden',
+    }}>
+      {/* Chart type switcher */}
+      {availableTypes.length > 1 && (
+        <div style={{
+          display: 'flex', gap: '.3rem', padding: '.45rem .65rem',
+          borderBottom: '1px solid #f1f5f9', background: '#f8fafc',
+        }}>
+          {availableTypes.map(t => (
+            <button
+              key={t}
+              onClick={() => setChartType(t)}
+              style={{
+                fontSize: '.7rem', fontWeight: 600,
+                padding: '2px 9px', borderRadius: 5, cursor: 'pointer',
+                background: chartType === t ? '#2563eb' : 'transparent',
+                color: chartType === t ? '#fff' : '#64748b',
+                border: chartType === t ? '1px solid #2563eb' : '1px solid #e2e8f0',
+                transition: 'all .12s',
+              }}
+            >
+              {typeLabel[t]}
+            </button>
+          ))}
+        </div>
+      )}
+      <div style={{ padding: '.65rem .5rem .5rem' }}>
+        {renderChart()}
+      </div>
+    </div>
+  );
+}
+
+// ── DataTable ─────────────────────────────────────────────────────────────────
 
 function DataTable({ columns, rows }) {
   if (!columns.length) return null;
@@ -49,15 +342,35 @@ function DataTable({ columns, rows }) {
   );
 }
 
+// ── BotActions ────────────────────────────────────────────────────────────────
+
 function BotActions({ sql, columns, rows }) {
-  const [showData, setShowData] = useState(false);
-  const [showSql,  setShowSql]  = useState(false);
+  const [showChart, setShowChart] = useState(true);   // chart visible by default
+  const [showData,  setShowData]  = useState(false);
+  const [showSql,   setShowSql]   = useState(false);
+
   if (!sql) return null;
+
+  const hasChart = detectChartConfig(columns, rows) !== null;
 
   return (
     <div style={{ marginTop: '.65rem', display: 'flex', flexDirection: 'column', gap: '.45rem' }}>
       {/* CTA row */}
       <div style={{ display: 'flex', gap: '.4rem', flexWrap: 'wrap' }}>
+        {hasChart && (
+          <button
+            onClick={() => setShowChart(o => !o)}
+            style={{
+              fontSize: '.72rem', fontWeight: 600,
+              color: showChart ? '#1d4ed8' : '#2563eb',
+              background: showChart ? '#dbeafe' : '#eff6ff',
+              border: `1px solid ${showChart ? '#93c5fd' : '#bfdbfe'}`,
+              borderRadius: 6, padding: '3px 10px', cursor: 'pointer',
+            }}
+          >
+            {showChart ? '▼ Hide Chart' : '📊 View Chart'}
+          </button>
+        )}
         {columns?.length > 0 && (
           <button
             onClick={() => setShowData(o => !o)}
@@ -69,7 +382,7 @@ function BotActions({ sql, columns, rows }) {
               borderRadius: 6, padding: '3px 10px', cursor: 'pointer',
             }}
           >
-            {showData ? '▼ Hide Raw Data' : '📊 View Raw Data'}
+            {showData ? '▼ Hide Raw Data' : '🗂 View Raw Data'}
           </button>
         )}
         <button
@@ -86,10 +399,11 @@ function BotActions({ sql, columns, rows }) {
         </button>
       </div>
 
+      {/* Chart */}
+      {showChart && hasChart && <ChartView columns={columns} rows={rows} />}
+
       {/* Raw data table */}
-      {showData && columns?.length > 0 && (
-        <DataTable columns={columns} rows={rows} />
-      )}
+      {showData && columns?.length > 0 && <DataTable columns={columns} rows={rows} />}
 
       {/* SQL */}
       {showSql && (
@@ -104,6 +418,8 @@ function BotActions({ sql, columns, rows }) {
     </div>
   );
 }
+
+// ── Message ───────────────────────────────────────────────────────────────────
 
 function Message({ msg }) {
   const isUser  = msg.role === 'user';
@@ -146,21 +462,61 @@ function Message({ msg }) {
   );
 }
 
-function TypingIndicator() {
+// ── TypingIndicator ───────────────────────────────────────────────────────────
+
+const STAGES = [
+  'Building SQL Query',
+  'Running Query',
+  'Generating Response',
+  'Response Generated',
+];
+
+function StageIndicator({ stage }) {
+  // stage: 1-based index of the current active stage (4 = done)
   return (
     <div style={{ display: 'flex', alignItems: 'flex-start', marginBottom: '.9rem' }}>
       <div style={{
         background: '#f8fafc', border: '1px solid #e2e8f0',
         borderRadius: '14px 14px 14px 4px',
-        padding: '.55rem .8rem',
-        display: 'flex', alignItems: 'center', gap: '.28rem',
+        padding: '.65rem 1rem',
+        display: 'flex', flexDirection: 'column', gap: '.38rem',
+        minWidth: 210,
       }}>
-        {[0, 1, 2].map(i => (
-          <div key={i} style={{
-            width: 7, height: 7, borderRadius: '50%', background: '#94a3b8',
-            animation: `helpbotBounce .9s ${i * 0.18}s infinite`,
-          }} />
-        ))}
+        {STAGES.map((label, i) => {
+          const idx = i + 1;
+          const done    = stage > idx;
+          const active  = stage === idx;
+          return (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '.5rem' }}>
+              {/* Icon */}
+              <div style={{
+                width: 18, height: 18, borderRadius: '50%', flexShrink: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: '.65rem', fontWeight: 700,
+                background: done ? '#2563eb' : active ? '#eff6ff' : '#f1f5f9',
+                border: done ? '2px solid #2563eb' : active ? '2px solid #2563eb' : '2px solid #e2e8f0',
+                color: done ? '#fff' : active ? '#2563eb' : '#cbd5e1',
+                transition: 'all .3s',
+              }}>
+                {done ? '✓' : active ? (
+                  <div style={{
+                    width: 6, height: 6, borderRadius: '50%', background: '#2563eb',
+                    animation: 'helpbotBounce .9s infinite',
+                  }} />
+                ) : idx}
+              </div>
+              {/* Label */}
+              <span style={{
+                fontSize: '.78rem',
+                fontWeight: active ? 600 : done ? 500 : 400,
+                color: done ? '#2563eb' : active ? '#0f172a' : '#94a3b8',
+                transition: 'all .3s',
+              }}>
+                {label}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -173,13 +529,15 @@ const SUGGESTIONS = [
   'Which entity has the lowest bot resolution rate?',
 ];
 
-// ── Main component ────────────────────────────────────────────────────────────
+// ── Main component ─────────────────────────────────────────────────────────────
 
 export default function HelpBot() {
   const [open,     setOpen]     = useState(false);
   const [messages, setMessages] = useState([]);
   const [input,    setInput]    = useState('');
   const [loading,  setLoading]  = useState(false);
+  const [stage,    setStage]    = useState(0);
+  const stageTimers = useRef([]);
   const bottomRef  = useRef(null);
   const inputRef   = useRef(null);
 
@@ -191,6 +549,11 @@ export default function HelpBot() {
     if (open) setTimeout(() => inputRef.current?.focus(), 150);
   }, [open]);
 
+  const clearStageTimers = () => {
+    stageTimers.current.forEach(clearTimeout);
+    stageTimers.current = [];
+  };
+
   const sendMessage = async (text) => {
     const userText = (text || input).trim();
     if (!userText || loading) return;
@@ -199,6 +562,12 @@ export default function HelpBot() {
     const userMsg = { role: 'user', content: userText };
     setMessages(prev => [...prev, userMsg]);
     setLoading(true);
+    setStage(1);
+
+    // Advance stages on timers — stage 4 set when response arrives
+    clearStageTimers();
+    stageTimers.current.push(setTimeout(() => setStage(2), 2500));
+    stageTimers.current.push(setTimeout(() => setStage(3), 5500));
 
     const history = messages.map(m => ({
       role: m.role === 'user' ? 'user' : 'assistant',
@@ -208,17 +577,24 @@ export default function HelpBot() {
     try {
       const res = await axios.post(`${API_BASE}/helpbot/chat`, { message: userText, history });
       const d = res.data;
-      setMessages(prev => [...prev, {
-        role: 'assistant', type: d.type, content: d.message,
-        sql: d.sql, columns: d.columns, rows: d.rows,
-      }]);
+      clearStageTimers();
+      setStage(4);
+      setTimeout(() => {
+        setMessages(prev => [...prev, {
+          role: 'assistant', type: d.type, content: d.message,
+          sql: d.sql, columns: d.columns, rows: d.rows,
+        }]);
+        setLoading(false);
+        setStage(0);
+      }, 600);
     } catch (err) {
+      clearStageTimers();
+      setStage(0);
       setMessages(prev => [...prev, {
         role: 'assistant', type: 'error',
         content: err.response?.data?.detail || 'Something went wrong. Please try again.',
         sql: null, columns: [], rows: [],
       }]);
-    } finally {
       setLoading(false);
     }
   };
@@ -361,7 +737,7 @@ export default function HelpBot() {
               )}
 
               {messages.map((msg, i) => <Message key={i} msg={msg} />)}
-              {loading && <TypingIndicator />}
+              {loading && <StageIndicator stage={stage} />}
               <div ref={bottomRef} />
             </div>
 
