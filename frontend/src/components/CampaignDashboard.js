@@ -201,6 +201,7 @@ function SessionTable({ sessions }) {
           showEval={false}
           recordingPath="obd"
           onClose={() => setSessionModal(null)}
+          onSearch={(v) => setSessionModal(v)}
         />
       )}
     </div>

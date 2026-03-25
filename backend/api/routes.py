@@ -490,10 +490,14 @@ def log_query(req: LogQueryRequest):
         typ  = e.get("type", "")
         msg  = e.get("message", "")
         lvl  = e.get("level", "INFO")
+        raw  = e.get("raw", "")
         meta_items = ", ".join(f"{k}={v}" for k, v in (e.get("meta") or {}).items())
         line = f"[{ts}] [{ph}/{typ}] [{lvl}] {msg}"
         if meta_items:
             line += f"  | {meta_items}"
+        # Include full raw log line so the LLM can see API response bodies
+        if raw and raw != msg and len(raw) > len(msg) + 10:
+            line += f"\n  RAW: {raw[:1000]}"
         lines.append(line)
 
     log_context = "\n".join(lines)
