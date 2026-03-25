@@ -9,11 +9,12 @@
 import React from 'react';
 
 const CHANNELS = [
-  { id: 'app_store',  name: 'App Store',             icon: '⭐', description: 'Google Play reviews & ratings',            color: '#f0fdf4' },
-  { id: 'helpdesk',   name: 'Help Desk',              icon: '🎧', description: 'Customer & merchant support interactions', color: '#fefce8' },
-  { id: 'campaigns',  name: 'Outbound Campaign',      icon: '📞', description: 'AI voice bot call analytics',             color: '#dbeafe' },
-  { id: 'ivr',        name: 'AI IVR',                 icon: '📱', description: 'MHD Call Center inbound analytics',       color: '#f0fdf4' },
-  { id: 'soundbox',   name: 'AI Soundbox',            icon: '🔊', description: 'AI bot calls for Soundbox & EDC devices',  color: '#fef3c7' },
+  { id: 'app_store',    name: 'App Store',          icon: '⭐', description: 'Google Play reviews & ratings',            color: '#f0fdf4' },
+  { id: 'helpdesk',     name: 'Help Desk',           icon: '🎧', description: 'Customer & merchant support interactions', color: '#fefce8' },
+  { id: 'campaigns',    name: 'Outbound Campaign',   icon: '📞', description: 'AI voice bot call analytics',             color: '#dbeafe' },
+  { id: 'ivr',          name: 'AI IVR',              icon: '📱', description: 'MHD Call Center inbound analytics',       color: '#f0fdf4' },
+  { id: 'soundbox',     name: 'AI Soundbox',         icon: '🔊', description: 'AI bot calls for Soundbox & EDC devices', color: '#fef3c7' },
+  { id: 'social_media', name: 'Social Media',        icon: '📲', description: 'Social media sentiment & mentions',       color: '#f8fafc', disabled: true },
 ];
 
 const APP_STORE_APPS = [
@@ -214,20 +215,38 @@ export default function ChannelSelector({
       <p>Choose a channel to analyse. The platform will surface top customer pain points.</p>
 
       {/* ── Step 1: Channel ── */}
-      <div className="channel-grid" style={{ gridTemplateColumns: 'repeat(5, minmax(150px, 220px))' }}>
+      <div className="channel-grid" style={{ gridTemplateColumns: 'repeat(6, minmax(140px, 200px))' }}>
         {CHANNELS.map((ch) => {
           const isSelected = selectedChannel === ch.id;
+          const isDisabled = !!ch.disabled;
           return (
             <div
               key={ch.id}
-              className={`channel-card ${isSelected ? 'selected' : ''}`}
-              onClick={() => onSelectChannel(ch.id)}
+              className={`channel-card ${isSelected ? 'selected' : ''} ${isDisabled ? 'disabled' : ''}`}
+              onClick={() => !isDisabled && onSelectChannel(ch.id)}
               role="radio"
               aria-checked={isSelected}
-              tabIndex={0}
-              onKeyDown={(e) => e.key === 'Enter' && onSelectChannel(ch.id)}
-              style={{ borderColor: isSelected ? '#2563eb' : undefined }}
+              aria-disabled={isDisabled}
+              tabIndex={isDisabled ? -1 : 0}
+              onKeyDown={(e) => !isDisabled && e.key === 'Enter' && onSelectChannel(ch.id)}
+              style={{
+                borderColor: isSelected ? '#2563eb' : undefined,
+                opacity: isDisabled ? 0.55 : 1,
+                cursor: isDisabled ? 'not-allowed' : 'pointer',
+                position: 'relative',
+              }}
             >
+              {isDisabled && (
+                <span style={{
+                  position: 'absolute', top: '8px', right: '8px',
+                  background: '#e2e8f0', color: '#64748b',
+                  fontSize: '0.6rem', fontWeight: 700,
+                  padding: '2px 6px', borderRadius: '999px',
+                  textTransform: 'uppercase', letterSpacing: '0.05em',
+                }}>
+                  Coming Soon
+                </span>
+              )}
               <div className={`channel-card-icon ${isSelected ? 'check-mark' : ''}`} style={{ background: ch.color }}>
                 {ch.icon}
               </div>

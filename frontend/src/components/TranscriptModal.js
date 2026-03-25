@@ -47,6 +47,114 @@ function isToolMsg(content) {
   return t.startsWith('{') || t.startsWith('[{');
 }
 
+// ── Object-dump detector + parser (Java/Kotlin toString format) ───────────────
+
+function isObjectDump(content) {
+  if (!content) return false;
+  return /^[\w][\w.]*\(/.test(content.trim());
+}
+
+function _splitTopLevel(str) {
+  const parts = [];
+  let depth = 0, cur = '';
+  for (const ch of str) {
+    if (ch === '(' || ch === '{') depth++;
+    else if (ch === ')' || ch === '}') depth--;
+    else if (ch === ',' && depth === 0) { parts.push(cur.trim()); cur = ''; continue; }
+    cur += ch;
+  }
+  if (cur.trim()) parts.push(cur.trim());
+  return parts;
+}
+
+function _parseVal(str) {
+  str = str.trim();
+  if (str === 'null') return null;
+  if (str === 'true') return true;
+  if (str === 'false') return false;
+  if (/^-?\d+(\.\d+)?$/.test(str)) return Number(str);
+  // ClassName(...) nested object
+  const cm = str.match(/^[\w.]+\(([\s\S]*)\)$/);
+  if (cm) return _parseKV(cm[1]);
+  // {k=v} map
+  if (str.startsWith('{') && str.endsWith('}')) return _parseKV(str.slice(1, -1));
+  return str;
+}
+
+function _parseKV(inner) {
+  const obj = {};
+  for (const pair of _splitTopLevel(inner)) {
+    const eq = pair.indexOf('=');
+    if (eq === -1) continue;
+    const key = pair.slice(0, eq).trim();
+    const val = pair.slice(eq + 1).trim();
+    if (key) obj[key] = _parseVal(val);
+  }
+  return obj;
+}
+
+function parseObjectDump(content) {
+  const t = content.trim();
+  const cm = t.match(/^([\w.]+)\(([\s\S]*)\)$/);
+  if (!cm) return null;
+  const obj = _parseKV(cm[2]);
+  return obj;
+}
+
+function ObjectDumpMessage({ content, bubbleStyle }) {
+  const [open, setOpen] = useState(false);
+  let jsonStr = content;
+  try {
+    const parsed = parseObjectDump(content);
+    if (parsed) jsonStr = JSON.stringify(parsed, null, 2);
+  } catch { jsonStr = content; }
+
+  return (
+    <div style={{ width: '100%' }}>
+      {!open ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', flexWrap: 'wrap' }}>
+          <span style={{ whiteSpace: 'pre-wrap', opacity: 0.75, fontSize: '.78rem' }}>
+            {content.slice(0, 60)}{content.length > 60 ? '…' : ''}
+          </span>
+          <button
+            onClick={() => setOpen(true)}
+            style={{
+              flexShrink: 0, background: 'rgba(255,255,255,0.25)',
+              border: '1px solid rgba(255,255,255,0.5)', borderRadius: 20,
+              color: 'inherit', cursor: 'pointer', fontSize: '.72rem',
+              fontWeight: 700, padding: '2px 10px', whiteSpace: 'nowrap',
+            }}
+          >
+            {'{ } View JSON'}
+          </button>
+        </div>
+      ) : (
+        <div>
+          <button
+            onClick={() => setOpen(false)}
+            style={{
+              background: 'rgba(255,255,255,0.2)', border: '1px solid rgba(255,255,255,0.4)',
+              borderRadius: 20, color: 'inherit', cursor: 'pointer',
+              fontSize: '.72rem', fontWeight: 700, padding: '2px 10px',
+              marginBottom: '.5rem',
+            }}
+          >
+            ▲ Collapse
+          </button>
+          <pre style={{
+            margin: 0, fontSize: '.72rem', lineHeight: 1.5,
+            whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+            background: 'rgba(0,0,0,0.15)', borderRadius: 6,
+            padding: '.5rem .65rem', maxHeight: 300, overflowY: 'auto',
+          }}>
+            {jsonStr}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToolMessage({ content, time }) {
   const [open, setOpen] = useState(false);
   let parsed = null;
@@ -873,7 +981,9 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
                       border: isUser ? 'none' : '1px solid #e2e8f0',
                     }}>
                       {isUser ? (
-                        <span style={{ whiteSpace:'pre-wrap' }}>{msg.content}</span>
+                        isObjectDump(msg.content)
+                          ? <ObjectDumpMessage content={msg.content} />
+                          : <span style={{ whiteSpace:'pre-wrap' }}>{msg.content}</span>
                       ) : (
                         <div className="md-bubble">
                           <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleanBot(msg.content)}</ReactMarkdown>

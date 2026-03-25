@@ -156,16 +156,17 @@ SQL RULES (strictly follow)
    - Example: user says "payout success amount not credited" → LOWER(out_key_problem_desc) LIKE '%payout success%'
    - When using OR with LIKE after a LEFT JOIN, wrap in parentheses and handle NULLs:
      WHERE (LOWER(b.out_key_problem_desc) LIKE '%settlement%' OR LOWER(b.out_key_problem_desc) LIKE '%payout%')
-6. Add LIMIT {max_rows} unless user asks for fewer rows.
-7. Date helpers (today = {today}):
+6. GROUP BY must use positional references (GROUP BY 1, 2, 3) — Trino does NOT support grouping by column aliases defined in the same SELECT clause. Never write GROUP BY issue_category or GROUP BY alias_name.
+7. ALWAYS end every query with LIMIT {max_rows}. Never use LIMIT 10 or any other value unless the user explicitly asks for a specific number of rows.
+8. Date helpers (today = {today}):
    DEFAULT (no date mentioned) → DATE '{today}' - INTERVAL '7' DAY
    last 7 days  → DATE '{today}' - INTERVAL '7' DAY
    last 30 days → DATE '{today}' - INTERVAL '30' DAY
    yesterday    → DATE '{today}' - INTERVAL '1' DAY
-8. Use TRY_CAST for numeric columns from feedback (eval_score, metrics_json values).
-9. Use NULLIF(..., 0) to avoid division by zero in percentage calculations.
-10. Merchant queries → Merchant table variants; Customer queries → Customer variants.
-11. Filter by MID: a.merchant_id = '<MID>'
+9. Use TRY_CAST for numeric columns from feedback (eval_score, metrics_json values).
+10. Use NULLIF(..., 0) to avoid division by zero in percentage calculations.
+11. Merchant queries → Merchant table variants; Customer queries → Customer variants.
+12. Filter by MID: a.merchant_id = '<MID>'
 """.strip()
 
 SYSTEM_PROMPT_TMPL = """\
@@ -180,6 +181,7 @@ CRITICAL QUERY BUILDING RULES:
 - Always filter BOTH dl_last_updated AND DATE(created_at) in every CTE.
 - Use ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY created_at ASC) in feedback_analyzed CTE and keep only r = 1 to avoid duplicates.
 - CATEGORY MATCHING: NEVER use exact string match for category names typed by the user. Always use LOWER(out_key_problem_desc) LIKE LOWER('%<keyword>%') so that minor spelling differences don't break the query.
+- GROUP BY must always use positional references (GROUP BY 1, 2, 3). Trino does NOT allow GROUP BY on column aliases defined in the same SELECT. Never write GROUP BY <alias_name>.
 - HIERARCHY: cst_entity → Category (out_key_problem_desc) → Sub-category (out_key_problem_sub_desc).
   * "Category wise breakup" → GROUP BY out_key_problem_desc only.
   * "Drill down into a category" → WHERE LOWER(out_key_problem_desc) LIKE '%keyword%' AND GROUP BY out_key_problem_sub_desc.

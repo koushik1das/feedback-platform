@@ -482,6 +482,7 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
           showEval={!showListenButton}
           recordingPath={showListenButton ? recordingPath : null}
           onClose={() => setTranscriptId(null)}
+          onSearch={(v) => setTranscriptId(v)}
         />
       )}
     </>

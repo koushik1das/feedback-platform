@@ -445,7 +445,7 @@ def _fetch_from_loki(
             "date":       date_part,
             "start_time": start_hms,
             "end_time":   end_hms,
-            "limit":      200,
+            "limit":      500,
         },
         helpdesk_type=helpdesk_type,
     )
