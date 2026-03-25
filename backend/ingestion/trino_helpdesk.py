@@ -175,99 +175,194 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
     """
     Query Trino and return a dict that maps directly to InsightsResponse fields.
 
+    Funnel (mirrors master_queries.sql pattern — see CST_DATA_GUIDE.md):
+      support_ticket_details_snapshot_v3      → base session count (total_sessions)
+      feedback_complete_analyzed_snapshot_v3  → L1/L2 tags, eval, tone (LEFT JOIN on ticket_id)
+      ticket_meta_snapshot_v3                 → MSAT feedback_status (LEFT JOIN on ticket_id)
+
+    Key rules:
+      - dl_last_updated: mandatory Trino partition filter on every table — NEVER used for
+        business date logic or grouping.
+      - DATE(s.created_at): sole session business date column for filtering and grouping.
+      - feedback_complete_analyzed.created_at is the eval job timestamp (D+1), not session
+        date — do NOT filter on it. Date scoping is handled via the JOIN to session base.
+      - Row presence in feedback_complete_analyzed = eval job ran. No task_status filter needed.
+      - INNER JOIN for analysis queries: restricts to sessions where eval ran AND tags are valid.
+
     Args:
         product:       product slug (e.g. "loan", "soundbox", "train", "flight")
         helpdesk_type: "merchant" or "customer"
         date_range:    one of last_7_days | last_30_days | yesterday | day_before_yesterday
     """
-    entity_map = CUSTOMER_CST_ENTITY_MAP if helpdesk_type == "customer" else CST_ENTITY_MAP
-    cst_entity = entity_map.get(product, product)
-    schema     = DB_SCHEMA.get(helpdesk_type, "crm_cst")
-    table      = f"hive.{schema}.feedback_complete_analyzed_data_snapshot_v3"
-    conn = _connect()
-    cur = conn.cursor()
+    entity_map     = CUSTOMER_CST_ENTITY_MAP if helpdesk_type == "customer" else CST_ENTITY_MAP
+    cst_entity     = entity_map.get(product, product)
+    schema         = DB_SCHEMA.get(helpdesk_type, "crm_cst")
+    session_table  = f"hive.{schema}.support_ticket_details_snapshot_v3"
+    feedback_table = f"hive.{schema}.feedback_complete_analyzed_data_snapshot_v3"
+    meta_table     = f"hive.{schema}.ticket_meta_snapshot_v3"
 
-    # Find the latest date that has completed analysis (started rows have no analysis fields)
+    conn = _connect()
+    cur  = conn.cursor()
+
+    # ── 1. Max date anchor — always from the base session table ───────────────
+    # Use DATE(created_at) for business date logic.
+    # dl_last_updated is a mandatory Trino partition filter only — never use it
+    # for date grouping or range logic. See CST_DATA_GUIDE.md §4.
     cur.execute(f"""
-        SELECT MAX(dl_last_updated)
-        FROM {table}
+        SELECT MAX(DATE(created_at))
+        FROM {session_table}
         WHERE cst_entity = '{cst_entity}'
           AND dl_last_updated >= DATE '2025-01-01'
-          AND task_status = 'completed'
     """)
     max_date = cur.fetchone()[0]
     if max_date is None:
         raise ValueError(f"No data found for entity '{cst_entity}'.")
 
-    since, until = _resolve_date_range(max_date, date_range)
-    date_filter = f"dl_last_updated BETWEEN DATE '{since}' AND DATE '{until}'"
+    since, until   = _resolve_date_range(max_date, date_range)
+    date_label     = since if since == until else f"{since} → {until}"
+    user_label     = "customers" if helpdesk_type == "customer" else "merchants"
 
-    # 1. Issues with tone breakdown (for avg sentiment per issue)
+    # ── 2. Core funnel — single query: total sessions, analysed count, MSAT ───
+    # Base: support_ticket_details (one row per session, keyed on id).
+    # LEFT JOIN feedback_complete_analyzed on ticket_id = id:
+    #   row presence = eval job ran; no task_status filter needed.
+    # LEFT JOIN ticket_meta on ticket_id = id: MSAT feedback_status.
+    # COUNT(DISTINCT fa.ticket_id) = sessions where eval ran (total_analysed).
+    # All dl_last_updated filters are mandatory Trino partition pruning only.
     cur.execute(f"""
-        SELECT out_key_problem_desc, out_merchant_tone, COUNT(*) AS cnt
-        FROM {table}
-        WHERE cst_entity = '{cst_entity}'
-          AND task_status = 'completed'
-          AND {date_filter}
-          AND out_key_problem_desc IS NOT NULL
-          AND out_key_problem_desc NOT IN ('Others', 'NA', 'None', '')
-        GROUP BY out_key_problem_desc, out_merchant_tone
+        SELECT
+            COUNT(DISTINCT s.id)                                                       AS total_sessions,
+            COUNT(DISTINCT fa.ticket_id)                                               AS total_analysed,
+            COUNT(DISTINCT CASE WHEN tm.feedback_status = '2' THEN s.id END)           AS happy,
+            COUNT(DISTINCT CASE WHEN tm.feedback_status = '3' THEN s.id END)           AS sad,
+            COUNT(DISTINCT CASE WHEN tm.feedback_status = '4' THEN s.id END)           AS skipped
+        FROM {session_table} s
+        LEFT JOIN {feedback_table} fa
+               ON fa.ticket_id = s.id
+              AND fa.dl_last_updated >= DATE '2025-01-01'
+        LEFT JOIN {meta_table} tm
+               ON tm.ticket_id = s.id
+              AND tm.dl_last_updated >= DATE '2025-01-01'
+        WHERE s.cst_entity = '{cst_entity}'
+          AND s.dl_last_updated >= DATE '2025-01-01'
+          AND DATE(s.created_at) BETWEEN DATE '{since}' AND DATE '{until}'
+    """)
+    row            = cur.fetchone()
+    total_sessions = row[0] or 0
+    total_analysed = row[1] or 0
+    happy          = row[2] or 0
+    sad            = row[3] or 0
+    skipped        = row[4] or 0
+
+    # ── FALLBACK: eval job hasn't run yet for this date range ─────────────────
+    if total_analysed == 0:
+        ai_summary = (
+            f"Analysis data not yet available for {cst_entity} ({date_label}). "
+            f"Showing raw session data: {total_sessions:,} sessions. "
+            f"MSAT — Happy: {happy}, Sad: {sad}, Skip: {skipped}."
+        )
+        return {
+            "total_feedback":            total_sessions,
+            "total_sessions":            total_sessions,
+            "total_analysed":            0,
+            "channels_analysed":         ["Helpdesk"],
+            "top_issues":                [],
+            "social_media_threat_count": 0,
+            "social_media_threat_pct":   0.0,
+            "sentiment_distribution":    {
+                "positive": happy,
+                "neutral":  skipped,
+                "negative": sad,
+                "total":    total_sessions,
+            },
+            "trending_issues": [],
+            "ai_summary":      ai_summary,
+            "generated_at":    datetime.utcnow().isoformat(),
+            "data_from":       since,
+            "data_until":      until,
+            "is_raw_fallback": True,
+        }
+
+    # ── FULL ANALYSIS PATH ────────────────────────────────────────────────────
+    # All queries below INNER JOIN session base → feedback_complete_analyzed.
+    # INNER JOIN restricts to sessions where eval ran AND tags are valid.
+    # Sessions with failed/null eval are excluded from L1/L2 display but still
+    # counted in total_sessions. Percentages use total_analysed as denominator.
+    # dl_last_updated is partition filter only. DATE(s.created_at) = date logic.
+
+    # 3. L1 issues with tone — eval-run sessions with valid tags only
+    cur.execute(f"""
+        SELECT fa.out_key_problem_desc, fa.out_merchant_tone, COUNT(*) AS cnt
+        FROM {session_table} s
+        JOIN {feedback_table} fa
+          ON fa.ticket_id = s.id
+         AND fa.dl_last_updated >= DATE '2025-01-01'
+        WHERE s.cst_entity = '{cst_entity}'
+          AND s.dl_last_updated >= DATE '2025-01-01'
+          AND DATE(s.created_at) BETWEEN DATE '{since}' AND DATE '{until}'
+          AND fa.out_key_problem_desc IS NOT NULL
+          AND fa.out_key_problem_desc NOT IN ('Others', 'NA', 'None', '')
+        GROUP BY fa.out_key_problem_desc, fa.out_merchant_tone
     """)
     issue_tone_rows = cur.fetchall()
 
-    # 2. Total completed records
-    cur.execute(f"""
-        SELECT COUNT(*)
-        FROM {table}
-        WHERE cst_entity = '{cst_entity}'
-          AND task_status = 'completed'
-          AND {date_filter}
-    """)
-    total = cur.fetchone()[0] or 0
-
-    # 3. Overall tone distribution for sentiment summary
-    cur.execute(f"""
-        SELECT out_merchant_tone, COUNT(*) AS cnt
-        FROM {table}
-        WHERE cst_entity = '{cst_entity}'
-          AND task_status = 'completed'
-          AND {date_filter}
-        GROUP BY out_merchant_tone
-    """)
-    tone_rows = cur.fetchall()
-
-    # 3b. Social media escalation threat
+    # 4. Social media threat — eval-run sessions
     cur.execute(f"""
         SELECT
-            COUNT(*) AS total,
-            SUM(CASE WHEN social_media_threat IN ('YES', 'हाँ', 'हां') THEN 1 ELSE 0 END) AS threat_count
-        FROM {table}
-        WHERE cst_entity = '{cst_entity}'
-          AND task_status = 'completed'
-          AND {date_filter}
+            COUNT(*)                                                                          AS total,
+            SUM(CASE WHEN fa.social_media_threat IN ('YES', 'हाँ', 'हां') THEN 1 ELSE 0 END) AS threat_count
+        FROM {session_table} s
+        JOIN {feedback_table} fa
+          ON fa.ticket_id = s.id
+         AND fa.dl_last_updated >= DATE '2025-01-01'
+        WHERE s.cst_entity = '{cst_entity}'
+          AND s.dl_last_updated >= DATE '2025-01-01'
+          AND DATE(s.created_at) BETWEEN DATE '{since}' AND DATE '{until}'
     """)
-    threat_row = cur.fetchone()
+    threat_row   = cur.fetchone()
     threat_total = threat_row[0] or 0
     threat_count = threat_row[1] or 0
-    threat_pct = round(threat_count / threat_total * 100, 2) if threat_total > 0 else 0.0
+    threat_pct   = round(threat_count / threat_total * 100, 2) if threat_total > 0 else 0.0
 
-    # 4. Sample comments per issue with ticket_id, tone, language, date
+    # 5. Sample comments — L1 + L2 label, ticket_id, tone, session date
+    # DATE(s.created_at) is the correct session date column (not dl_last_updated)
     cur.execute(f"""
-        SELECT out_key_problem_desc, out_key_problem_sub_desc, ticket_id,
-               out_merchant_tone, dl_last_updated
-        FROM {table}
-        WHERE cst_entity = '{cst_entity}'
-          AND task_status = 'completed'
-          AND {date_filter}
-          AND out_key_problem_desc IS NOT NULL
-          AND out_key_problem_desc NOT IN ('Others', 'NA', 'None', '')
-          AND out_key_problem_sub_desc IS NOT NULL
-          AND out_key_problem_sub_desc NOT IN ('Others', 'NA', 'None', '')
+        SELECT fa.out_key_problem_desc, fa.out_key_problem_sub_desc,
+               fa.ticket_id, fa.out_merchant_tone, DATE(s.created_at)
+        FROM {session_table} s
+        JOIN {feedback_table} fa
+          ON fa.ticket_id = s.id
+         AND fa.dl_last_updated >= DATE '2025-01-01'
+        WHERE s.cst_entity = '{cst_entity}'
+          AND s.dl_last_updated >= DATE '2025-01-01'
+          AND DATE(s.created_at) BETWEEN DATE '{since}' AND DATE '{until}'
+          AND fa.out_key_problem_desc IS NOT NULL
+          AND fa.out_key_problem_desc NOT IN ('Others', 'NA', 'None', '')
+          AND fa.out_key_problem_sub_desc IS NOT NULL
+          AND fa.out_key_problem_sub_desc NOT IN ('Others', 'NA', 'None', '')
         LIMIT 2000
     """)
     comment_rows = cur.fetchall()
 
-    # ── Aggregate issue data ──────────────────────────────────────────────────
+    # 6. L2 counts per L1
+    cur.execute(f"""
+        SELECT fa.out_key_problem_desc, fa.out_key_problem_sub_desc, COUNT(*) AS cnt
+        FROM {session_table} s
+        JOIN {feedback_table} fa
+          ON fa.ticket_id = s.id
+         AND fa.dl_last_updated >= DATE '2025-01-01'
+        WHERE s.cst_entity = '{cst_entity}'
+          AND s.dl_last_updated >= DATE '2025-01-01'
+          AND DATE(s.created_at) BETWEEN DATE '{since}' AND DATE '{until}'
+          AND fa.out_key_problem_desc IS NOT NULL
+          AND fa.out_key_problem_desc NOT IN ('Others', 'NA', 'None', '')
+          AND fa.out_key_problem_sub_desc IS NOT NULL
+          AND fa.out_key_problem_sub_desc NOT IN ('Others', 'NA', 'None', '')
+        GROUP BY fa.out_key_problem_desc, fa.out_key_problem_sub_desc
+    """)
+    l2_count_rows = cur.fetchall()
+
+    # ── Aggregate L1 ──────────────────────────────────────────────────────────
 
     l1_data: Dict[str, Dict] = defaultdict(
         lambda: {"total": 0, "tone_counts": defaultdict(int)}
@@ -276,26 +371,49 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
         l1_data[l1]["total"] += cnt
         l1_data[l1]["tone_counts"][tone or "neutral"] += cnt
 
-    # Pool sample comments per L1 — store (text, ticket_id, tone, lang, date) tuples
-    comments_by_l1: Dict[str, List[tuple]] = defaultdict(list)
-    for l1, comment, ticket_id, tone, row_date in comment_rows:
-        if l1 and comment and len(comments_by_l1[l1]) < 10:
-            date_str = str(row_date) if row_date else None
-            comments_by_l1[l1].append((comment, ticket_id, tone, _detect_lang(comment), date_str))
+    # Build per-(L1, L2) sample bank
+    samples_by_l2:  Dict[tuple, List[tuple]] = defaultdict(list)
+    comments_by_l1: Dict[str, List[tuple]]   = defaultdict(list)
+    for l1, l2_text, ticket_id, tone, row_date in comment_rows:
+        date_str = str(row_date) if row_date else None
+        if len(samples_by_l2[(l1, l2_text)]) < 20:
+            samples_by_l2[(l1, l2_text)].append((ticket_id, tone, date_str))
+        if l1 and l2_text and len(comments_by_l1[l1]) < 10:
+            comments_by_l1[l1].append((l2_text, ticket_id, tone, _detect_lang(l2_text), date_str))
 
-    sorted_l1 = sorted(l1_data.items(), key=lambda x: x[1]["total"], reverse=True)
+    # Build L2 sub_categories per L1
+    # L2 percentage is relative to its parent L1 count (not total_analysed)
+    l2_counts: Dict[str, Dict[str, int]] = defaultdict(dict)
+    for l1, l2, cnt in l2_count_rows:
+        l2_counts[l1][l2] = cnt
+
+    sub_cats_by_l1: Dict[str, List] = {}
+    for l1, l2_map in l2_counts.items():
+        l1_total_for_pct = l1_data[l1]["total"] if l1 in l1_data else total_analysed
+        subs = []
+        for l2, cnt in sorted(l2_map.items(), key=lambda x: -x[1]):
+            samples = samples_by_l2.get((l1, l2), [])
+            subs.append({
+                "label":         l2,
+                "count":         cnt,
+                "percentage":    round(cnt / l1_total_for_pct * 100, 1) if l1_total_for_pct else 0.0,
+                "ticket_ids":    [s[0] for s in samples],
+                "comment_tones": [s[1] for s in samples],
+                "comment_dates": [s[2] for s in samples],
+            })
+        sub_cats_by_l1[l1] = subs
 
     top_issues = []
-    for l1, data in sorted_l1[:10]:
-        l1_total = data["total"]
-        tone_counts = data["tone_counts"]
+    for l1, data in sorted(l1_data.items(), key=lambda x: x[1]["total"], reverse=True)[:10]:
+        l1_total     = data["total"]
+        tone_counts  = data["tone_counts"]
         weighted_sum = sum(TONE_SCORE.get(t, 0.0) * c for t, c in tone_counts.items())
-        avg_score = weighted_sum / l1_total if l1_total else 0.0
+        avg_score    = weighted_sum / l1_total if l1_total else 0.0
         issue_comments = comments_by_l1.get(l1, [])
         top_issues.append({
             "label":              l1,
             "count":              l1_total,
-            "percentage":         round(l1_total / total * 100, 1) if total else 0.0,
+            "percentage":         round(l1_total / total_analysed * 100, 1) if total_analysed else 0.0,
             "avg_sentiment":      round(avg_score, 2),
             "sentiment_label":    _score_to_label(avg_score),
             "example_comments":   [c[0] for c in issue_comments],
@@ -305,46 +423,59 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
             "comment_dates":      [c[4] for c in issue_comments],
             "comment_ratings":    [None  for c in issue_comments],
             "channels":           {"helpdesk": l1_total},
+            "sub_categories":     sub_cats_by_l1.get(l1, []),
         })
 
-    # ── Sentiment distribution ────────────────────────────────────────────────
+    # ── Sentiment distribution — MSAT takes priority, tone as fallback ────────
+    if (happy + sad + skipped) > 0:
+        positive = happy
+        negative = sad
+        neutral  = skipped
+    else:
+        positive = neutral = negative = 0
+        # tone-based fallback — join via session base table
+        cur.execute(f"""
+            SELECT fa.out_merchant_tone, COUNT(*) AS cnt
+            FROM {session_table} s
+            JOIN {feedback_table} fa
+              ON fa.ticket_id = s.id
+             AND fa.dl_last_updated >= DATE '2025-01-01'
+            WHERE s.cst_entity = '{cst_entity}'
+              AND s.dl_last_updated >= DATE '2025-01-01'
+              AND DATE(s.created_at) BETWEEN DATE '{since}' AND DATE '{until}'
+            GROUP BY fa.out_merchant_tone
+        """)
+        for tone, cnt in cur.fetchall():
+            score = TONE_SCORE.get(tone or "neutral", 0.0)
+            if score >= 0.2:    positive += cnt
+            elif score <= -0.2: negative += cnt
+            else:               neutral  += cnt
 
-    positive = neutral = negative = 0
-    for tone, cnt in tone_rows:
-        score = TONE_SCORE.get(tone or "neutral", 0.0)
-        if score >= 0.2:
-            positive += cnt
-        elif score <= -0.2:
-            negative += cnt
-        else:
-            neutral += cnt
-
-    # ── AI summary (rule-based) ───────────────────────────────────────────────
-
-    top_label   = top_issues[0]["label"] if top_issues else "N/A"
-    top_pct     = top_issues[0]["percentage"] if top_issues else 0
-    neg_pct     = round(negative / total * 100, 1) if total else 0
-    user_label  = "customers" if helpdesk_type == "customer" else "merchants"
-    date_label  = since if since == until else f"{since} → {until}"
+    # ── AI summary ────────────────────────────────────────────────────────────
+    top_label = top_issues[0]["label"] if top_issues else "N/A"
+    top_pct   = top_issues[0]["percentage"] if top_issues else 0
+    neg_pct   = round(negative / total_sessions * 100, 1) if total_sessions else 0
     ai_summary = (
-        f"Analysed {total:,} helpdesk interactions for {cst_entity} "
-        f"({date_label}). "
-        f"Top complaint: '{top_label}' ({top_pct}% of tickets). "
+        f"Analysed {total_sessions:,} helpdesk sessions for {cst_entity} ({date_label}). "
+        f"{total_analysed:,} sessions ({round(total_analysed/total_sessions*100) if total_sessions else 0}%) have eval data. "
+        f"Top complaint: '{top_label}' ({top_pct}% of analysed). "
         f"{neg_pct}% of {user_label} expressed frustration. "
         f"Top trending issues: {', '.join(i['label'] for i in top_issues[:3])}."
     )
 
     return {
-        "total_feedback":           total,
-        "channels_analysed":        ["Helpdesk"],
-        "top_issues":               top_issues,
+        "total_feedback":            total_sessions,
+        "total_sessions":            total_sessions,
+        "total_analysed":            total_analysed,
+        "channels_analysed":         ["Helpdesk"],
+        "top_issues":                top_issues,
         "social_media_threat_count": threat_count,
         "social_media_threat_pct":   threat_pct,
-        "sentiment_distribution": {
+        "sentiment_distribution":    {
             "positive": positive,
             "neutral":  neutral,
             "negative": negative,
-            "total":    total,
+            "total":    total_sessions,
         },
         "trending_issues": [i["label"] for i in top_issues[:3]],
         "ai_summary":      ai_summary,

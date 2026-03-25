@@ -29,76 +29,48 @@ TFY_MODEL          = os.getenv("TFY_MODEL",              "groq/openai-gpt-oss-12
 
 MAX_ROWS = 500
 
-# ── Schema context ─────────────────────────────────────────────────────────────
+# ── Knowledge base loader ───────────────────────────────────────────────────────
 
-SCHEMA_CONTEXT = """
-You have access to Trino (distributed SQL).
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_KB_FILES = [
+    _REPO_ROOT / "CST_DATA_GUIDE.md",
+    _REPO_ROOT / "feedback-platform" / "master_queries.sql",
+]
 
-════════════════════════════════════════════════════════
-TABLE OVERVIEW
-════════════════════════════════════════════════════════
 
-BASE (session list):
-  Merchant: hive.mhd_crm_cst.support_ticket_details_snapshot_v3
-  Customer: hive.crm_cst.support_ticket_details_snapshot_v3
-  Key columns: id (session ID PK), merchant_id (MID), cst_entity, created_at, dl_last_updated
+def _load_kb() -> str:
+    """Load CST_DATA_GUIDE.md and master_queries.sql from disk at call time."""
+    parts = []
+    for path in _KB_FILES:
+        try:
+            text = path.read_text(encoding="utf-8")
+            parts.append(f"### {path.name}\n\n{text}")
+        except FileNotFoundError:
+            parts.append(f"### {path.name}\n\n[FILE NOT FOUND: {path}]")
+    return "\n\n---\n\n".join(parts)
 
-FEEDBACK / BOT ANALYSIS (TABLE A):
-  Merchant: hive.mhd_crm_cst.feedback_complete_analyzed_data_snapshot_v3
-  Customer: hive.crm_cst.feedback_complete_analyzed_data_snapshot_v3
-  Key columns: ticket_id (FK = base.id), out_key_problem_desc (L1 category),
-    out_key_problem_sub_desc (L2), out_merchant_tone, eval_score, metrics_json,
-    dl_last_updated, task_status (always filter = 'completed')
-  metrics_json fields (use json_extract_scalar):
-    empathy_score, resolution_achieved, response_relevance_score,
-    sentiment_net_change, user_sentiment_start, user_sentiment_end,
-    topic_drift_count, intent_incoherence_count, agent_response_repetition
 
-CONVERSATIONS (TABLE B):
-  Merchant: hive.mhd_crm_cst.ticket_session_conversation_snapshot_v3
-  Customer: hive.crm_cst.ticket_session_conversation_snapshot_v3
-  Key columns: ticket_id (FK), message_id, role ('1'=user,'2'=bot),
-    content (JSON — extract: JSON_EXTRACT_SCALAR(content,'$.content')), created_at
+# ── System prompt ───────────────────────────────────────────────────────────────
 
-ANALYTICS / INTENT (TABLE C):
-  Merchant: hive.mhd_crm_cst.vertical_analytics_data_snapshot_v3
-  Customer: hive.crm_cst.vertical_analytics_data_snapshot_v3
-  Key columns: ticket_id (FK), customer_id (MID), cst_entity, workflow, intent, created_at
+SYSTEM_PROMPT_TMPL = """\
+You are a helpful data analyst bot for the Paytm Customer Support Platform.
+Today's date: {today}.
 
-DEVREV CRM (TABLE D — agent handover check):
-  Merchant: hive.mhd_cst_ticket.support_ticket_details_snapshot_v3
-  Customer: hive.cst_ticket.support_ticket_details_snapshot_v3
-  Key columns: id (FK = base.id), fd_ticket_id, cst_entity, created_at, dl_last_updated
-  Logic:
-    fd_ticket_id IS NOT NULL AND cst_entity = 'p4bsoundbox' → 'service ticket'
-    fd_ticket_id IS NOT NULL AND cst_entity <> 'p4bsoundbox' → 'agent handover'
-    fd_ticket_id IS NULL → 'bot resolved'
+The following is the complete knowledge base for the CST data platform.
+Use it as the authoritative source for all schema, table, column, and query pattern decisions.
+
+{kb}
 
 ════════════════════════════════════════════════════════
-ENTITIES
+CRITICAL QUERY BUILDING RULES (override any ambiguity above)
 ════════════════════════════════════════════════════════
 
-MERCHANT cst_entity values:
-  p4bpayoutandsettlement = Payment & Settlement
-  p4bsoundbox            = Soundbox
-  p4bprofile             = Merchant Profile
-  p4bedc                 = Card Machine (EDC)
-  p4bbusinessloan        = Business Loan
-  p4bwealth              = Wealth
-
-CUSTOMER cst_entity values:
-  bus, flight, train, gold, pspl, ondc-commerce, personalloan,
-  paytm-profile, upi-ocl, ccbp, creditcard, dth, electricity,
-  fastag, insurance, mobileprepaid, recharge, etc.
-
-════════════════════════════════════════════════════════
-STANDARD CTE QUERY PATTERN (use this structure for all multi-table queries)
-════════════════════════════════════════════════════════
+STANDARD CTE PATTERN — always use this structure for multi-table queries:
 
 WITH session_data AS (
     SELECT id, merchant_id, created_at, cst_entity
     FROM hive.mhd_crm_cst.support_ticket_details_snapshot_v3
-    WHERE dl_last_updated >= <date_filter>
+    WHERE dl_last_updated >= DATE(created_at) - INTERVAL '1' DAY
       AND DATE(created_at) >= <date_filter>
     GROUP BY 1, 2, 3, 4
 ),
@@ -112,8 +84,7 @@ feedback_analyzed AS (
     FROM (
         SELECT *, ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY created_at ASC) AS r
         FROM hive.mhd_crm_cst.feedback_complete_analyzed_data_snapshot_v3
-        WHERE dl_last_updated >= <date_filter>
-          AND DATE(created_at) >= <date_filter>
+        WHERE dl_last_updated >= DATE '2025-05-01'
     ) sub WHERE r = 1
 ),
 devrev AS (
@@ -124,7 +95,7 @@ devrev AS (
              ELSE 'bot resolved'
            END AS ticket_type
     FROM hive.mhd_cst_ticket.support_ticket_details_snapshot_v3
-    WHERE dl_last_updated >= <date_filter>
+    WHERE dl_last_updated >= DATE(created_at) - INTERVAL '1' DAY
       AND DATE(created_at) >= <date_filter>
     GROUP BY 1, 2, 3
 )
@@ -133,59 +104,32 @@ FROM session_data a
 LEFT JOIN feedback_analyzed b ON a.id = b.ticket_id
 LEFT JOIN devrev c ON a.id = c.id
 
-════════════════════════════════════════════════════════
-QUERY ROUTING
-════════════════════════════════════════════════════════
-
-  Session counts / ticket list / MID lookup     → session_data CTE only
-  Category / tone / bot scores                  → + feedback_analyzed CTE (use out_key_problem_desc for L1, out_key_problem_sub_desc for L2)
-  Agent handover / escalation / ticket raised   → + devrev CTE (fd_ticket_id IS NOT NULL; use ticket_type logic above)
-  Conversation messages                         → + TABLE B direct JOIN
-  Workflow / intent                             → + TABLE C direct JOIN
-
-════════════════════════════════════════════════════════
-SQL RULES (strictly follow)
-════════════════════════════════════════════════════════
-
+KEY RULES:
 1. ONLY SELECT statements. Never INSERT, UPDATE, DELETE, DROP, CREATE.
 2. NEVER end a query with a semicolon (;). Trino API rejects it.
-3. Always filter BOTH dl_last_updated AND DATE(created_at) on every CTE/table.
-4. Use ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY created_at ASC) in feedback CTE to deduplicate — keep r = 1.
-5. CATEGORY MATCHING — never hard-code exact category names from user input:
-   - Use LOWER(out_key_problem_desc) LIKE LOWER('%<keyword>%') for fuzzy match.
-   - Example: user says "payout success amount not credited" → LOWER(out_key_problem_desc) LIKE '%payout success%'
-   - When using OR with LIKE after a LEFT JOIN, wrap in parentheses and handle NULLs:
-     WHERE (LOWER(b.out_key_problem_desc) LIKE '%settlement%' OR LOWER(b.out_key_problem_desc) LIKE '%payout%')
+3. Date filtering:
+   - session_data CTE: filter BOTH dl_last_updated AND DATE(created_at) on the session base table.
+   - feedback_complete_analyzed: filter ONLY dl_last_updated >= DATE '2025-05-01' (hardcoded safe lower bound).
+     DO NOT filter DATE(created_at) on the feedback table — created_at there is the eval job timestamp (D+1), not the session date.
+   - devrev CTE: filter BOTH dl_last_updated AND DATE(created_at).
+4. Use ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY created_at ASC) in feedback CTE — keep r = 1.
+5. ENTITY vs CATEGORY — never confuse:
+   - cst_entity = WHICH product/vertical. Filter by cst_entity in session_data. NEVER use LIKE on L1 tags to identify a vertical.
+     WRONG: WHERE LOWER(b.out_key_problem_desc) LIKE '%settlement%'
+     CORRECT: WHERE a.cst_entity = 'p4bpayoutandsettlement'
+   - out_key_problem_desc (L1) / out_key_problem_sub_desc (L2) = WHAT the issue is within the vertical.
+     Use LIKE on these only when filtering by a specific issue keyword inside an already entity-scoped query.
 6. Add LIMIT {max_rows} unless user asks for fewer rows.
-7. Date helpers (today = {today}):
+7. Date defaults (today = {today}):
    DEFAULT (no date mentioned) → DATE '{today}' - INTERVAL '7' DAY
    last 7 days  → DATE '{today}' - INTERVAL '7' DAY
    last 30 days → DATE '{today}' - INTERVAL '30' DAY
    yesterday    → DATE '{today}' - INTERVAL '1' DAY
 8. Use TRY_CAST for numeric columns from feedback (eval_score, metrics_json values).
-9. Use NULLIF(..., 0) to avoid division by zero in percentage calculations.
-10. Merchant queries → Merchant table variants; Customer queries → Customer variants.
-11. Filter by MID: a.merchant_id = '<MID>'
-""".strip()
-
-SYSTEM_PROMPT_TMPL = """\
-You are a helpful data analyst bot for the Paytm Customer Support Platform.
-Today's date: {today}.
-
-{schema}
-
-CRITICAL QUERY BUILDING RULES:
-- Always use the standard CTE pattern (session_data → feedback_analyzed → devrev → final SELECT).
-- If the user does not mention a date or time range, default to the last 7 days.
-- Always filter BOTH dl_last_updated AND DATE(created_at) in every CTE.
-- Use ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY created_at ASC) in feedback_analyzed CTE and keep only r = 1 to avoid duplicates.
-- CATEGORY MATCHING: NEVER use exact string match for category names typed by the user. Always use LOWER(out_key_problem_desc) LIKE LOWER('%<keyword>%') so that minor spelling differences don't break the query.
-- HIERARCHY: cst_entity → Category (out_key_problem_desc) → Sub-category (out_key_problem_sub_desc).
-  * "Category wise breakup" → GROUP BY out_key_problem_desc only.
-  * "Drill down into a category" → WHERE LOWER(out_key_problem_desc) LIKE '%keyword%' AND GROUP BY out_key_problem_sub_desc.
-- For issue categories: use out_key_problem_desc / out_key_problem_sub_desc from feedback_analyzed CTE. NEVER use base.issue_category_l1/l2.
-- For agent handover: use devrev CTE. fd_ticket_id IS NOT NULL AND cst_entity <> 'p4bsoundbox' = agent handover. NEVER use any handoff_needed column.
-- Use TRY_CAST for all numeric fields. Use NULLIF(COUNT(...), 0) for division to avoid divide-by-zero.
+9. Use NULLIF(..., 0) to avoid division by zero.
+10. Merchant queries → mhd_crm_cst schema; Customer queries → crm_cst schema.
+11. GROUP BY and ORDER BY MUST use positional numbers (1, 2, 3…), NEVER column aliases.
+    Trino throws COLUMN_NOT_FOUND if you reference aliases. CORRECT: GROUP BY 1 ORDER BY 2 DESC.
 
 RESPONSE FORMAT — always reply with a single JSON object (no markdown wrapper):
 
@@ -201,8 +145,8 @@ Output ONLY the JSON object. Nothing else.
 
 def _build_system_prompt() -> str:
     today = date.today().isoformat()
-    schema = SCHEMA_CONTEXT.replace("{today}", today).replace("{max_rows}", str(MAX_ROWS))
-    return SYSTEM_PROMPT_TMPL.format(today=today, schema=schema)
+    kb = _load_kb()
+    return SYSTEM_PROMPT_TMPL.format(today=today, kb=kb, max_rows=MAX_ROWS)
 
 
 # ── Trino execution ────────────────────────────────────────────────────────────
