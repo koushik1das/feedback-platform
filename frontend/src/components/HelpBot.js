@@ -109,36 +109,69 @@ function LabelTooltip({ tooltip }) {
 
 function HelpBotBarChart({ columns, rows, cfg }) {
   const [activeCol, setActiveCol] = useState(cfg.numericCols[0]);
+  const [colFilter, setColFilter] = useState('');
   const [tooltip, setTooltip] = useState(null);
   const data = buildChartData(columns, rows);
   const maxLabel = Math.max(...data.map(d => String(d[cfg.labelCol] ?? '').length));
   const yWidth = Math.min(Math.max(Math.min(maxLabel, MAX_LABEL_CHARS) * 7 + 16, 80), 200);
   const chartHeight = Math.max(200, data.length * 36 + 40);
+  const manyMetrics = cfg.numericCols.length > 8;
+
+  const filteredCols = colFilter.trim()
+    ? cfg.numericCols.filter(c => c.toLowerCase().includes(colFilter.trim().toLowerCase()))
+    : cfg.numericCols;
 
   return (
     <div>
       <LabelTooltip tooltip={tooltip} />
       {/* Metric selector — only shown when multiple numeric cols */}
       {cfg.numericCols.length > 1 && (
-        <div style={{ display: 'flex', gap: '.3rem', flexWrap: 'wrap', padding: '.3rem .5rem .1rem' }}>
-          {cfg.numericCols.map((col, i) => (
-            <button
-              key={col}
-              onClick={() => setActiveCol(col)}
-              style={{
-                fontSize: '.69rem', fontWeight: 600,
-                padding: '2px 9px', borderRadius: 5, cursor: 'pointer',
-                background: activeCol === col ? CHART_COLORS[i % CHART_COLORS.length] : 'transparent',
-                color: activeCol === col ? '#fff' : '#64748b',
-                border: activeCol === col
-                  ? `1px solid ${CHART_COLORS[i % CHART_COLORS.length]}`
-                  : '1px solid #e2e8f0',
-                transition: 'all .12s',
+        <div style={{ padding: '.3rem .5rem .2rem' }}>
+          {/* Filter input for wide datasets (e.g. function call queries with 80+ metrics) */}
+          {manyMetrics && (
+            <input
+              type="text"
+              value={colFilter}
+              onChange={e => {
+                setColFilter(e.target.value);
+                const matched = cfg.numericCols.find(c =>
+                  c.toLowerCase().includes(e.target.value.trim().toLowerCase())
+                );
+                if (matched) setActiveCol(matched);
               }}
-            >
-              {col}
-            </button>
-          ))}
+              placeholder="Filter metrics… (e.g. success_pct, attempts)"
+              style={{
+                width: '100%', boxSizing: 'border-box',
+                marginBottom: '.3rem', padding: '4px 9px',
+                fontSize: '.72rem', borderRadius: 6,
+                border: '1px solid #e2e8f0', outline: 'none',
+                color: '#334155', background: '#f8fafc',
+              }}
+            />
+          )}
+          <div style={{ display: 'flex', gap: '.3rem', flexWrap: 'wrap' }}>
+            {filteredCols.map((col, i) => (
+              <button
+                key={col}
+                onClick={() => setActiveCol(col)}
+                style={{
+                  fontSize: '.69rem', fontWeight: 600,
+                  padding: '2px 9px', borderRadius: 5, cursor: 'pointer',
+                  background: activeCol === col ? CHART_COLORS[cfg.numericCols.indexOf(col) % CHART_COLORS.length] : 'transparent',
+                  color: activeCol === col ? '#fff' : '#64748b',
+                  border: activeCol === col
+                    ? `1px solid ${CHART_COLORS[cfg.numericCols.indexOf(col) % CHART_COLORS.length]}`
+                    : '1px solid #e2e8f0',
+                  transition: 'all .12s',
+                }}
+              >
+                {col}
+              </button>
+            ))}
+            {filteredCols.length === 0 && (
+              <span style={{ fontSize: '.72rem', color: '#94a3b8', padding: '2px 4px' }}>No metrics match</span>
+            )}
+          </div>
         </div>
       )}
       <ResponsiveContainer width="100%" height={chartHeight}>
@@ -299,8 +332,37 @@ function ChartView({ columns, rows }) {
 
 // ── DataTable ─────────────────────────────────────────────────────────────────
 
+const RAW_PAGE = 25;
+
+// Threshold above which a cell value is treated as "long text"
+const LONG_TEXT_CHARS = 80;
+
+function CellValue({ value }) {
+  const str = value === null || value === undefined ? '—' : String(value);
+  if (str.length <= LONG_TEXT_CHARS) return <span>{str}</span>;
+  return (
+    <div style={{
+      maxHeight: 120,
+      overflowY: 'auto',
+      maxWidth: 340,
+      whiteSpace: 'pre-wrap',
+      wordBreak: 'break-word',
+      lineHeight: 1.45,
+      paddingRight: 4,
+    }}>
+      {str}
+    </div>
+  );
+}
+
 function DataTable({ columns, rows }) {
+  const [limit, setLimit] = useState(RAW_PAGE);
   if (!columns.length) return null;
+
+  const visible  = rows.slice(0, limit);
+  const hasMore  = rows.length > limit;
+  const remaining = Math.min(RAW_PAGE, rows.length - limit);
+
   return (
     <div style={{ overflowX: 'auto', marginTop: '.65rem', borderRadius: 8, border: '1px solid #e2e8f0' }}>
       <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '.78rem', minWidth: 300 }}>
@@ -318,25 +380,57 @@ function DataTable({ columns, rows }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, ri) => (
+          {visible.map((row, ri) => (
             <tr key={ri} style={{ background: ri % 2 === 0 ? '#fff' : '#f8fafc' }}>
-              {row.map((cell, ci) => (
-                <td key={ci} style={{
-                  padding: '.4rem .75rem', color: '#334155',
-                  borderBottom: '1px solid #f1f5f9', whiteSpace: 'nowrap',
-                }}>
-                  {cell === null || cell === undefined ? '—' : String(cell)}
-                </td>
-              ))}
+              {row.map((cell, ci) => {
+                const str = cell === null || cell === undefined ? '—' : String(cell);
+                const isLong = str.length > LONG_TEXT_CHARS;
+                return (
+                  <td key={ci} style={{
+                    padding: '.4rem .75rem', color: '#334155',
+                    borderBottom: '1px solid #f1f5f9',
+                    whiteSpace: isLong ? 'normal' : 'nowrap',
+                    verticalAlign: isLong ? 'top' : 'middle',
+                  }}>
+                    <CellValue value={cell} />
+                  </td>
+                );
+              })}
             </tr>
           ))}
         </tbody>
       </table>
       <div style={{
-        padding: '.3rem .75rem', fontSize: '.7rem', color: '#94a3b8',
+        padding: '.35rem .75rem', fontSize: '.7rem', color: '#94a3b8',
         background: '#f8fafc', borderTop: '1px solid #f1f5f9',
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '.5rem',
+        flexWrap: 'wrap',
       }}>
-        {rows.length} row{rows.length !== 1 ? 's' : ''}
+        <span>Showing {visible.length} of {rows.length} row{rows.length !== 1 ? 's' : ''}</span>
+        {hasMore && (
+          <div style={{ display: 'flex', gap: '.4rem' }}>
+            <button
+              onClick={() => setLimit(l => l + RAW_PAGE)}
+              style={{
+                fontSize: '.68rem', fontWeight: 600, cursor: 'pointer',
+                color: '#2563eb', background: '#eff6ff',
+                border: '1px solid #bfdbfe', borderRadius: 5, padding: '2px 8px',
+              }}
+            >
+              Load {remaining} more
+            </button>
+            <button
+              onClick={() => setLimit(rows.length)}
+              style={{
+                fontSize: '.68rem', fontWeight: 600, cursor: 'pointer',
+                color: '#64748b', background: '#f1f5f9',
+                border: '1px solid #e2e8f0', borderRadius: 5, padding: '2px 8px',
+              }}
+            >
+              Show all {rows.length}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -620,7 +714,12 @@ export default function HelpBot() {
         .helpbot-md li           { margin-bottom: .18rem; }
         .helpbot-md code         { background: #e2e8f0; padding: 1px 5px; border-radius: 3px; font-size: .76rem; }
         .helpbot-md strong       { font-weight: 600; }
-        .helpbot-md h3           { font-size: .88rem; font-weight: 700; margin: .5rem 0 .25rem; }
+        .helpbot-md h3           { font-size: .88rem; font-weight: 700; margin: .6rem 0 .3rem; color: #0f172a; }
+        .helpbot-md h2           { font-size: .95rem; font-weight: 700; margin: .7rem 0 .3rem; color: #0f172a; }
+        .helpbot-md table        { border-collapse: collapse; width: 100%; margin: .5rem 0; font-size: .76rem; }
+        .helpbot-md th           { background: #f1f5f9; padding: .3rem .6rem; text-align: left; font-weight: 600; color: #475569; border: 1px solid #e2e8f0; white-space: nowrap; }
+        .helpbot-md td           { padding: .28rem .6rem; color: #334155; border: 1px solid #e2e8f0; white-space: nowrap; }
+        .helpbot-md tr:nth-child(even) td { background: #f8fafc; }
       `}</style>
 
       {/* Floating trigger button */}

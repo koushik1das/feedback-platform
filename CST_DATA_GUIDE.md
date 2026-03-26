@@ -37,7 +37,9 @@ Paytm CST/MHD customer support datasets.
 10. Does the final SELECT contain `GROUP BY`? → Verify that the positional columns in `GROUP BY 1, 2` are non-aggregate scalar expressions (date, entity). If the SELECT starts with `COUNT(...)`, Trino throws `EXPRESSION_NOT_SCALAR` (§0.15). Always list dimension columns first.
 9. Does the query unwrap `plugservice_response`? → Use **single** backslash `'\'` in REPLACE and `'\['`/`'\{'` in REGEXP_REPLACE patterns. Double backslash `'\\'` silently breaks all JSON extraction → all `_status` columns return NULL. Also wrap REGEXP_REPLACE inside an inner `sub` subquery with `GROUP BY` in the `vertical` CTE (§14.2).
 11. Does the question mention "soundbox", "device", "EDC", "card machine", or any ACPS function related to device? → Filter `session_data` by `cst_entity IN ('p4bsoundbox', 'p4bAIBot', 'p4bedc')` — **NEVER** just `= 'p4bsoundbox'` alone. All three entities share the same bot prompt and represent the same device intent (§6.2).
-12. Before returning any query — self-check: (a) does `messages_data` include `ticket_id, message_id, role, content, type`? (b) does every CTE reference only columns that exist in the tables it selects from? (c) are there any emojis inside the SQL text or comments? Fix any issue before returning.
+12. Before returning any query — self-check: (a) does `messages_data` include `ticket_id, message_id, role, content, type`? (b) does every CTE reference only columns that exist in the tables it selects from? (c) are there any emojis inside the SQL text or comments? (d) do any SQL string literals contain Unicode typographic characters (en dash `–`, em dash `—`, curly quotes `'` `"` `"`, non-breaking space, ellipsis `…`, math minus `−`)? Replace all with plain ASCII equivalents before returning. (e) **BACKSLASH SCAN — if the query contains any REGEXP_REPLACE**: scan every regex pattern string for `\\[`, `\\]`, `\\{`, `\\}`, `\\(`, `\\)` — if any are found, replace with `\[`, `\]`, `\{`, `\}`, `\(`, `\)`. Trino SQL REGEXP_REPLACE uses Java regex; SQL string literals do NOT need double-escaping of brackets/braces. Double backslash (`\\[`) matches a literal backslash followed by `[`, not a literal `[` — this silently breaks all JSON extraction and makes every status column NULL. Single backslash (`\[`) is always correct. Fix any issue before returning.
+13. Does the question mention "agent handover attempts", "agent handover success rate", or "how often the handover function succeeded/failed"? → Use the `vertical` CTE (joined from `vertical_analytics_data_snapshot_v3`) — this holds Paytm's function call data (`workflow LIKE '%ACPS_agent_handover%'`). Do NOT use the DevRev table for this. Does the question ask for "agent handover count", "how many sessions were handed over", or "escalation count"? → Use the `devrev` CTE (`fd_ticket_id IS NOT NULL`) — this is the ticket ingested from the DevRev platform by Paytm's support team after a handover completes. The two tables measure different things (§7c).
+14. Does the question filter on a specific L1/L2 issue label (`out_key_problem_desc`, `out_key_sub_issue_desc`) — whether typed by the user, copy-pasted from a prior result, or taken from your own previous answer? → NEVER use `=` exact match. Always use `LOWER(column) LIKE '%keyword%'` with the most distinctive 2-3 words from the label stripped of any punctuation. Reason: (a) the user may provide a partial label, (b) copy-pasted values from your own analysis text contain Unicode typographic dashes and quotes that do not match the ASCII characters stored in Trino, (c) case may differ. See §0.2c for the full pattern.
 
 **You must NEVER:**
 - Start a query from the eval, devrev, or meta table — always from `session_data` CTE.
@@ -52,6 +54,7 @@ Paytm CST/MHD customer support datasets.
 - Write a SELECT that starts with aggregate columns when `GROUP BY` is present — always put dimension columns (`DATE(created_at)`, `cst_entity`) first so `GROUP BY 1, 2` resolves to scalars, not aggregates (§0.15).
 - Call `JSON_EXTRACT_SCALAR` inside a `COUNT(DISTINCT CASE WHEN ...)` expression — this always returns NULL. Pre-extract as a named column in `final1` first (§0.17).
 - Use `'\\'` (double backslash) in the `plugservice_response` REPLACE/REGEXP_REPLACE unwrap — use `'\'` (single backslash). Double backslash silently breaks all JSON extraction, making every `_status` column NULL (§14.2).
+- Write `'\\['`, `'\\]'`, `'\\{'`, `'\\}'` in any Trino REGEXP_REPLACE pattern — always write `'\['`, `'\]'`, `'\{'`, `'\}'`. This is not Python or JavaScript: Trino SQL string literals do not need double-escaping for regex metacharacters. Double backslash makes the regex match a literal backslash character, not the intended bracket/brace, and every nested JSON field stays double-encoded. Pre-flight check (e) will catch this — but never write it in the first place.
 - UNION ALL directly from `final1` 26 times for a function-level output — aggregate all functions wide into a single `agg` CTE first, then UNION ALL from `agg`. Repeated CTE references multiply stages and hit the 200-stage Trino limit (§0.18).
 - Do `JSON_EXTRACT_SCALAR` inside the `vertical` CTE or use column aliases in its `GROUP BY` — `vertical` exposes exactly 6 columns via `GROUP BY 1,2,3,4,5,6`, all JSON extraction belongs in `final1` (§14.2).
 - Write the `vertical` CTE without an inner subquery + GROUP BY — always wrap REGEXP_REPLACE in a `sub` subquery and GROUP BY the outer columns (§14.2).
@@ -59,6 +62,10 @@ Paytm CST/MHD customer support datasets.
 - Filter a soundbox/device/EDC query with `cst_entity = 'p4bsoundbox'` alone — always use `cst_entity IN ('p4bsoundbox', 'p4bAIBot', 'p4bedc')` to capture agent handover and EDC escalation sessions (§6.2).
 - Omit `role` (or any other standard column) from the `messages_data` CTE — always select `ticket_id, message_id, role, content, type` as the minimum set. Missing `role` breaks `grouped_sess` user_msg logic and any downstream role-based filtering (§0.11).
 - Use emojis (🔹, 1️⃣, ✅, ❌, etc.) anywhere inside SQL query text or SQL comments — emojis may appear only in the plain-text report or explanation, never inside a query string.
+- Use Unicode typographic characters inside SQL string literals — en dash `–` (U+2013), em dash `—` (U+2014), curly/smart quotes `'` `"` `"` (U+2018/2019/201C/201D), non-breaking space (U+00A0), ellipsis `…` (U+2026), or math minus `−` (U+2212). These look identical to ASCII in text output but silently return zero rows in Trino string comparisons. Always replace with plain ASCII: `–`/`—` → `-`, smart quotes → straight quotes, non-breaking space → regular space, `…` → `...` (§0.2c).
+- Use `=` exact match to filter `out_key_problem_desc` or `out_key_sub_issue_desc` — always use `LOWER(column) LIKE '%keyword%'`. Exact match fails silently when the user's value has Unicode characters, different casing, or is a partial label copied from a prior result (§0.2c).
+- Use the `devrev` CTE (fd_ticket_id) to measure agent handover **attempts or success rate** — the DevRev table only records tickets that were created after a completed handover; it cannot tell you how many times the bot tried or whether the ACPS function succeeded. Use the `vertical` CTE for attempts and success rate (§7c).
+- Use the `vertical` CTE to count "how many sessions had an agent handover" as a simple session count — use `fd_ticket_id IS NOT NULL` on the devrev CTE for that. The vertical table is for function call attempt/success metrics, not session-level escalation counts (§7c).
 
 When in doubt about a metric or join pattern, follow this document exactly. Do not invent logic.
 
@@ -125,6 +132,52 @@ WHERE cst_entity = 'p4bpayoutandsettlement'
 WHERE a.cst_entity = 'p4bpayoutandsettlement'
   AND LOWER(b.out_key_problem_desc) LIKE '%delay%'
 ```
+
+### 0.2c Safe L1/L2 String Matching — Unicode & Partial Input Guardrail
+
+**The problem:** L1/L2 labels (`out_key_problem_desc`, `out_key_sub_issue_desc`) are free-text strings stored in Trino with plain ASCII characters. However:
+
+1. **Your own analysis text uses typographic Unicode.** When you write "Payout Success – Amount not Credited" in a response, the `–` is an **en dash (U+2013)**. When that label is then reused in a SQL WHERE clause, the en dash does not match the plain hyphen `-` (U+002D) stored in Trino. Zero rows are returned with no error. This is the most common silent failure pattern for L1/L2 filters.
+
+2. **Users copy-paste or type partial values.** A user may type "Amount not Credited" instead of the full label, or copy from a table in a prior response.
+
+3. **Casing is inconsistent.** The eval pipeline may store labels in mixed, lower, or title case.
+
+**Unicode characters that silently break SQL string comparisons:**
+
+| Character | Unicode | What it looks like | Safe ASCII |
+|---|---|---|---|
+| En dash | U+2013 | `–` | `-` |
+| Em dash | U+2014 | `—` | `-` |
+| Right curly apostrophe | U+2019 | `'` | `'` |
+| Left/right double quotes | U+201C/D | `"` `"` | `"` |
+| Non-breaking space | U+00A0 | ` ` (invisible) | regular space |
+| Ellipsis | U+2026 | `…` | `...` |
+| Math minus | U+2212 | `−` | `-` |
+
+**The correct pattern — always LIKE, never `=`:**
+
+```sql
+-- User asked about "Payout Success - Amount not Credited"
+-- (or "Payout Success – Amount not Credited", or partial "Amount not Credited")
+-- Extract the most distinctive 2-3 words, lowercase, use LIKE:
+AND LOWER(f.out_key_problem_desc) LIKE '%amount not credited%'
+
+-- For a label like "Transaction Failure - Debit but no Credit"
+AND LOWER(f.out_key_problem_desc) LIKE '%debit but no credit%'
+
+-- If only partial info from user: "payout not credited"
+AND LOWER(f.out_key_problem_desc) LIKE '%not credited%'
+```
+
+**Rules for building the LIKE pattern:**
+- Take the most distinctive 2-3 consecutive words from the user's label.
+- Lowercase the keyword (Trino LIKE is case-sensitive; `LOWER()` normalises it).
+- Replace any dash, en dash, em dash, or special punctuation in the keyword with a plain space or `%` wildcard.
+- Never use `=` — even if the user provides what looks like an exact label, it may contain invisible Unicode characters from copy-paste.
+- If uncertain which exact words are stored, err toward fewer, more distinctive words in the LIKE pattern.
+
+**When the user provides a label from a prior query result in the same session**, the value came back from Trino so it is safe to use — but still use LIKE instead of `=` to guard against rendering substitution.
 
 ### 0.3 Never Mix Window Functions With GROUP BY Aggregates
 
@@ -899,13 +952,66 @@ Use this as a decision table when constructing queries. Only include CTEs that a
 |---------------|--------------------------|
 | Session counts, ticket list, MID lookup | `session_data` only |
 | Issue categories, tone, eval scores, L1/L2 breakdown | `session_data` + `feedback_analyzed` CTE |
-| Agent handover / escalation / DevRev ticket raised | `session_data` + `devrev` CTE |
+| Agent handover **count** / sessions escalated / DevRev ticket raised | `session_data` + `devrev` CTE (`fd_ticket_id IS NOT NULL`) |
+| Agent handover **attempts or success rate** (function call level) | `session_data` + `vertical` CTE (`workflow LIKE '%ACPS_agent_handover%'`) — see §7c |
 | MSAT (Happy/Sad/Skip) | `session_data` + `feedback_status` CTE (`ticket_meta_snapshot_v3`) |
 | Conversation messages / transcript | `session_data` + direct JOIN to `ticket_session_conversation_snapshot_v3` |
 | Workflow, intent, plugin data | `session_data` + direct JOIN to `vertical_analytics_data_snapshot_v3` |
 | Bounced vs active sessions | `session_data` + `grouped_sess` CTE (counts user messages) |
 
 Always start from `session_data` (the base session table) and LEFT JOIN outward. Never drive the query from the feedback or eval table.
+
+---
+
+## 7c. Agent Handover — Two Different Metrics, Two Different Tables
+
+There are **two distinct concepts** both called "agent handover". Always clarify which one the user wants before writing SQL.
+
+### What each table measures
+
+| Metric | Table | How |
+|--------|-------|-----|
+| **Handover attempts** — how many times the bot called the ACPS agent_handover function | `vertical_analytics_data_snapshot_v3` via `vertical` CTE | `workflow LIKE '%ACPS_agent_handover%'` |
+| **Handover success rate** — what fraction of those function calls returned `status = success` | `vertical_analytics_data_snapshot_v3` via `vertical` CTE | `agent_handover_status = 'success'` (pre-extracted in `final1`) |
+| **Handover count (session level)** — how many sessions resulted in a ticket being raised on DevRev | `support_ticket_details_snapshot_v3` (DevRev schema) via `devrev` CTE | `fd_ticket_id IS NOT NULL` |
+
+### Why they are different
+
+- The **`vertical` table** contains Paytm's bot function call log — one row per plugin/API call the bot made within a session. It records every time the bot *attempted* `ACPS_agent_handover`, and whether that attempt *succeeded* or *failed*. This data comes from Paytm's support team's own pipeline.
+- The **`devrev` table** is ingested from the **DevRev platform** by their team. It only contains sessions where a ticket was actually created and synced from DevRev — i.e., a completed, confirmed handover. It says nothing about attempts or failures.
+
+A session can have:
+- Multiple `ACPS_agent_handover` attempts in `vertical` (bot retried), but only one `fd_ticket_id` (or none if all attempts failed).
+- An `fd_ticket_id` without a matching `ACPS_agent_handover` row in `vertical` (edge case: ticket created through a different path).
+
+### Query patterns
+
+**Handover attempts + success rate (vertical table):**
+```sql
+-- In final1 CTE, pre-extract the status (§0.17):
+JSON_EXTRACT_SCALAR(b.plugservice_response,
+    '$.data.action_response.agent_handover.FCResponse.status')
+        AS agent_handover_status,
+
+-- In the SELECT / agg:
+COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_agent_handover%'
+    THEN id END)                             AS agent_handover_attempts,
+COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_agent_handover%'
+    AND agent_handover_status = 'success'
+    THEN id END)                             AS agent_handover_success,
+ROUND(
+    COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_agent_handover%'
+        AND agent_handover_status = 'success' THEN id END) * 100.0
+    / NULLIF(COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_agent_handover%'
+        THEN id END), 0), 2)                 AS agent_handover_success_pct
+```
+Join: `LEFT JOIN vertical b ON a.id = b.ticket_id`
+
+**Handover count / escalation count (devrev table):**
+```sql
+COUNT(DISTINCT CASE WHEN d.fd_ticket_id IS NOT NULL THEN s.id END) AS handover_sessions
+```
+Join: `LEFT JOIN devrev d ON s.id = d.id`
 
 ---
 
