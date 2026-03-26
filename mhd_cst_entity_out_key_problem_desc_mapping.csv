@@ -1,0 +1,104 @@
+#,Intent,cst_entity,Key-Problem Description Title
+1,Payments and Settlements,p4bpayoutandsettlement,Payout Success - Amount not Credited
+2,Payments and Settlements,p4bpayoutandsettlement,Payout Pending
+3,Payments and Settlements,p4bpayoutandsettlement,Payout Failed
+4,Payments and Settlements,p4bpayoutandsettlement,Settlement Data not available
+5,Payments and Settlements,p4bpayoutandsettlement,Short/Less Payout received
+6,Payments and Settlements,p4bpayoutandsettlement,Chargeback Transaction
+7,Payments and Settlements,p4bpayoutandsettlement,Payout Unhold/Hold
+8,Payments and Settlements,p4bpayoutandsettlement,Instant Settlement Activation
+9,Payments and Settlements,p4bpayoutandsettlement,Payout Success
+10,Payments and Settlements,p4bpayoutandsettlement,QR not working
+11,Payments and Settlements,p4bpayoutandsettlement,Order/download QR
+12,Payments and Settlements,p4bpayoutandsettlement,Rupay CC UPI enable/disable
+13,Payments and Settlements,p4bpayoutandsettlement,Transaction Status - Success
+14,Payments and Settlements,p4bpayoutandsettlement,Transaction Status - Not Found
+15,Payments and Settlements,p4bpayoutandsettlement,Transaction Status - Failed
+16,Payments and Settlements,p4bpayoutandsettlement,Transaction Status - Pending
+17,Payments and Settlements,p4bpayoutandsettlement,Payment Limit Related
+18,Payments and Settlements,p4bpayoutandsettlement,Account Upgrade Request
+19,Payments and Settlements,p4bpayoutandsettlement,Bank Account Change
+1,Device,"p4bsoundbox, p4bAIBot, p4bedc",Soundbox Device Battery Issue
+2,Device,"p4bsoundbox, p4bAIBot, p4bedc",Soundbox Device Charger Issue
+3,Device,"p4bsoundbox, p4bAIBot, p4bedc",Soundbox Sound not Coming
+4,Device,"p4bsoundbox, p4bAIBot, p4bedc",Soundbox Device not turning on - charger connected
+5,Device,"p4bsoundbox, p4bAIBot, p4bedc",Soundbox Device Damage
+6,Device,"p4bsoundbox, p4bAIBot, p4bedc",Soundbox Deactivation Request
+7,Device,"p4bsoundbox, p4bAIBot, p4bedc",Soundbox Device Lost
+8,Device,"p4bsoundbox, p4bAIBot, p4bedc",Soundbox Device Rental Info
+9,Device,"p4bsoundbox, p4bAIBot, p4bedc",Soundbox Device Picked rental not stopped
+10,Device,"p4bsoundbox, p4bAIBot, p4bedc",Soundbox Multiple Rental deduction
+11,Device,"p4bsoundbox, p4bAIBot, p4bedc",Soundbox Device Refund Related
+12,Device,"p4bsoundbox, p4bAIBot, p4bedc",Soundbox Device Not Working
+13,Device,"p4bsoundbox, p4bAIBot, p4bedc",Soundbox Order & Delivery Related
+14,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Battery Issue
+15,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Charging Issue
+16,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Network SIM Issue
+17,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Not Working
+18,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Damaged
+19,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Switch On Issue
+20,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC PED Tempered Issue
+21,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Activation Issue
+22,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Card Read Error
+23,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Terminal Lock Issue
+24,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Printer Issue
+25,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Error Code on Screen
+26,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Rental Info
+27,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Commission Charges Related
+28,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC International Card Related
+29,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Amex Card Related
+30,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Instrument Enable/Disable
+31,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Upgrade
+32,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Lost
+33,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Deactivation Request
+34,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Plan Upgrade
+35,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Network Wifi Issue
+36,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Refund Related
+37,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC New Device Request
+38,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Physical Training Request
+39,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Order & Delivery Related
+40,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Device Picked rental not stopped
+41,Device,"p4bsoundbox, p4bAIBot, p4bedc",EDC Multiple Rental/MDR deduction
+1,Business Loan,p4bbusinessloan,Loan Application Status
+2,Business Loan,p4bbusinessloan,Unable to complete the application
+3,Business Loan,p4bbusinessloan,Loan amount Disbursal/Credit related
+4,Business Loan,p4bbusinessloan,Loan Rejection Reason
+5,Business Loan,p4bbusinessloan,Loan Offer Related
+6,Business Loan,p4bbusinessloan,Loan Closure Related
+7,Business Loan,p4bbusinessloan,EDI Related Information
+8,Business Loan,p4bbusinessloan,Multiple EDI deduction Issue
+9,Business Loan,p4bbusinessloan,EDI deduction issue
+10,Business Loan,p4bbusinessloan,Loan Cancellation Related
+11,Business Loan,p4bbusinessloan,Self Pay/Re-pay Related
+12,Business Loan,p4bbusinessloan,Loan Statement Download
+13,Business Loan,p4bbusinessloan,Insurance Related
+14,Business Loan,p4bbusinessloan,Cibil Score Related
+15,Business Loan,p4bbusinessloan,FSE Miselling
+16,Business Loan,p4bbusinessloan,FSE Behaviour Issue
+1,Profile,p4bprofile,Merchant Account Reactivation
+2,Profile,p4bprofile,Bank Account Change
+3,Profile,p4bprofile,Primary Number Change
+4,Profile,p4bprofile,Pan Card Change
+5,Profile,p4bprofile,Payment Limit Related
+6,Profile,p4bprofile,Account Upgrade Request
+7,Profile,p4bprofile,Display Name Change Request
+8,Profile,p4bprofile,Business Name Change Request
+9,Profile,p4bprofile,Re-KYC Request
+10,Profile,p4bprofile,Business Category Change
+11,Profile,p4bprofile,Notification Related
+12,Profile,p4bprofile,Business Address Change
+13,Profile,p4bprofile,GST Number Update
+14,Profile,p4bprofile,Primary Email Id Update
+15,Profile,p4bprofile,Billing Address Change
+16,Profile,p4bprofile,Authorised Signatory Name Change
+17,Profile,p4bprofile,Account Termination Request
+18,Profile,p4bprofile,SMS Service Activation
+1,Wealth,p4bwealth,Activation Request
+2,Wealth,p4bwealth,Auto Debit Issue
+3,Wealth,p4bwealth,Balance Enquiry
+4,Wealth,p4bwealth,Balance Related Issue
+5,Wealth,p4bwealth,Cancel Gold Plan Investment
+6,Wealth,p4bwealth,Fund Not Credited to Bank Post Withdrawal
+7,Wealth,p4bwealth,Gold Coin Delivery
+8,Wealth,p4bwealth,Gold Saving FAQ
+9,Wealth,p4bwealth,Sell Gold
