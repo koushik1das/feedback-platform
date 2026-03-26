@@ -30,3 +30,6 @@ frontend/node_modules/
 # Claude local settings (may contain allowed bash commands with credentials)
 .claude/settings.local.json
 
+# Claude session context — local only, not for version control
+CLAUDE_CONTEXT.md
+

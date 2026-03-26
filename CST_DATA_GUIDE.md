@@ -32,6 +32,12 @@ Paytm CST/MHD customer support datasets.
 4. Does the query include score columns (eval_score, empathy_score etc.)? → multiply by `100.0` and `COALESCE(..., 0)`.
 5. Is the DevRev CTE included? → NO `cst_entity` filter on it, only `dl_last_updated` + date range.
 6. Is the conversation table needed? → always create a separate `messages_data` CTE with `ticket_id IN (SELECT id FROM session_data)`, never inline join it.
+7. Every `session_data` CTE MUST include `AND id NOT LIKE '2-%'` AND `AND source = 100` — without these you will include phone/email/WhatsApp sessions.
+8. Does the query involve function call success rates or any JSON-derived value used in a COUNT? → Pre-extract those values as named columns in `final1` CTE first (§0.17). Never call `JSON_EXTRACT_SCALAR` inside a `COUNT(DISTINCT CASE WHEN ...)` — it always returns NULL.
+10. Does the final SELECT contain `GROUP BY`? → Verify that the positional columns in `GROUP BY 1, 2` are non-aggregate scalar expressions (date, entity). If the SELECT starts with `COUNT(...)`, Trino throws `EXPRESSION_NOT_SCALAR` (§0.15). Always list dimension columns first.
+9. Does the query unwrap `plugservice_response`? → Use **single** backslash `'\'` in REPLACE and `'\['`/`'\{'` in REGEXP_REPLACE patterns. Double backslash `'\\'` silently breaks all JSON extraction → all `_status` columns return NULL. Also wrap REGEXP_REPLACE inside an inner `sub` subquery with `GROUP BY` in the `vertical` CTE (§14.2).
+11. Does the question mention "soundbox", "device", "EDC", "card machine", or any ACPS function related to device? → Filter `session_data` by `cst_entity IN ('p4bsoundbox', 'p4bAIBot', 'p4bedc')` — **NEVER** just `= 'p4bsoundbox'` alone. All three entities share the same bot prompt and represent the same device intent (§6.2).
+12. Before returning any query — self-check: (a) does `messages_data` include `ticket_id, message_id, role, content, type`? (b) does every CTE reference only columns that exist in the tables it selects from? (c) are there any emojis inside the SQL text or comments? Fix any issue before returning.
 
 **You must NEVER:**
 - Start a query from the eval, devrev, or meta table — always from `session_data` CTE.
@@ -43,7 +49,16 @@ Paytm CST/MHD customer support datasets.
 - Filter the DevRev CTE by `cst_entity`.
 - Join the conversation table inline inside `grouped_sess` — always a separate CTE.
 - Use `COUNT(...) OVER ()` window functions in a `GROUP BY` query — use a `totals` CTE + `CROSS JOIN` instead.
+- Write a SELECT that starts with aggregate columns when `GROUP BY` is present — always put dimension columns (`DATE(created_at)`, `cst_entity`) first so `GROUP BY 1, 2` resolves to scalars, not aggregates (§0.15).
+- Call `JSON_EXTRACT_SCALAR` inside a `COUNT(DISTINCT CASE WHEN ...)` expression — this always returns NULL. Pre-extract as a named column in `final1` first (§0.17).
+- Use `'\\'` (double backslash) in the `plugservice_response` REPLACE/REGEXP_REPLACE unwrap — use `'\'` (single backslash). Double backslash silently breaks all JSON extraction, making every `_status` column NULL (§14.2).
+- UNION ALL directly from `final1` 26 times for a function-level output — aggregate all functions wide into a single `agg` CTE first, then UNION ALL from `agg`. Repeated CTE references multiply stages and hit the 200-stage Trino limit (§0.18).
+- Do `JSON_EXTRACT_SCALAR` inside the `vertical` CTE or use column aliases in its `GROUP BY` — `vertical` exposes exactly 6 columns via `GROUP BY 1,2,3,4,5,6`, all JSON extraction belongs in `final1` (§14.2).
+- Write the `vertical` CTE without an inner subquery + GROUP BY — always wrap REGEXP_REPLACE in a `sub` subquery and GROUP BY the outer columns (§14.2).
 - Return only derived metrics without base count columns.
+- Filter a soundbox/device/EDC query with `cst_entity = 'p4bsoundbox'` alone — always use `cst_entity IN ('p4bsoundbox', 'p4bAIBot', 'p4bedc')` to capture agent handover and EDC escalation sessions (§6.2).
+- Omit `role` (or any other standard column) from the `messages_data` CTE — always select `ticket_id, message_id, role, content, type` as the minimum set. Missing `role` breaks `grouped_sess` user_msg logic and any downstream role-based filtering (§0.11).
+- Use emojis (🔹, 1️⃣, ✅, ❌, etc.) anywhere inside SQL query text or SQL comments — emojis may appear only in the plain-text report or explanation, never inside a query string.
 
 When in doubt about a metric or join pattern, follow this document exactly. Do not invent logic.
 
@@ -300,8 +315,10 @@ grouped_sess AS (
 )
 
 -- ✅ CORRECT — separate CTE first, then join in grouped_sess
+-- Mandatory minimum columns: ticket_id, message_id, role, content, type
+-- Never omit role (needed for user_msg logic) or type (needed for TRANSCRIPT filter)
 messages_data AS (
-    SELECT ticket_id, message_id, role, content
+    SELECT ticket_id, message_id, role, content, type
     FROM hive.mhd_crm_cst.ticket_session_conversation_snapshot_v3
     WHERE dl_last_updated >= DATE '2025-01-01'
       AND ticket_id IN (SELECT id FROM session_data)
@@ -317,7 +334,34 @@ grouped_sess AS (
 )
 ```
 
-### 0.12 Schema Routing — `p4b*` Entities Are ALWAYS Merchant (mhd_crm_cst)
+### 0.12 Global Bot Session Filters — Always Apply to `support_ticket_details`
+
+The `support_ticket_details_snapshot_v3` table contains sessions from ALL channels —
+bot, phone, email, WhatsApp, etc. **Without these two filters you will include
+non-bot sessions in every metric**, inflating counts and distorting all rates.
+
+Always add both filters to every `session_data` CTE:
+
+```sql
+session_data AS (
+    SELECT DISTINCT id, created_at, merchant_id, cst_entity
+    FROM hive.mhd_crm_cst.support_ticket_details_snapshot_v3
+    WHERE dl_last_updated >= DATE '2025-01-01'
+      AND DATE(created_at) BETWEEN DATE '{since}' AND DATE '{until}'
+      AND id NOT LIKE '2-%'   -- excludes non-bot session IDs (phone, email, WA etc.)
+      AND source = 100        -- 100 = bot channel only
+)
+```
+
+| Filter | What it excludes |
+|--------|-----------------|
+| `id NOT LIKE '2-%'` | Non-bot sessions — IDs starting with `2-` belong to phone/email/WhatsApp channels |
+| `source = 100` | Only bot-originated sessions; other source values = other channels |
+
+Both filters must always appear together. Omitting either will silently include
+non-bot traffic and corrupt all session counts and derived metrics.
+
+### 0.13 Schema Routing — `p4b*` Entities Are ALWAYS Merchant (mhd_crm_cst)
 
 **This is the single most common schema mistake.** Before writing any query, check
 the entity name:
@@ -340,7 +384,7 @@ WHERE cst_entity = 'p4bpayoutandsettlement'
 **The rule is simple: if `cst_entity` starts with `p4b`, every table in the query
 must use `hive.mhd_crm_cst` and DevRev must use `hive.mhd_cst_ticket`.**
 
-### 0.13 Daily / Day-wise Queries — Always GROUP BY Date
+### 0.14 Daily / Day-wise Queries — Always GROUP BY Date
 
 When the user asks for daily, day-wise, per-day, over N days, or trend data, the
 final SELECT **must** include `DATE(s.created_at)` as a column and `GROUP BY` it.
@@ -372,6 +416,157 @@ Trigger words that require `GROUP BY DATE(s.created_at)`:
 - "daily", "day-wise", "per day", "each day"
 - "over the last N days" when user expects a breakdown (not a total)
 - "trend", "day by day", "date-wise", "show me a table by date"
+
+### 0.15 `GROUP BY` Positional References Must Point to Non-Aggregate Columns
+
+`GROUP BY 1, 2` means column positions 1 and 2 in the SELECT. **Those columns must be
+non-aggregate expressions** — scalar values like `DATE(created_at)`, `cst_entity`, a literal, etc.
+If columns 1 or 2 are `COUNT(...)`, `SUM(...)`, or any aggregate, Trino throws
+`EXPRESSION_NOT_SCALAR`.
+
+This error most often happens when the grouping dimension columns (`DATE(created_at)`, `cst_entity`)
+are forgotten from the SELECT entirely, leaving only aggregate columns — so `GROUP BY 1` ends up
+pointing to a `COUNT(...)`.
+
+```sql
+-- ❌ WRONG — GROUP BY 1, 2 points to COUNT() expressions → EXPRESSION_NOT_SCALAR
+SELECT
+    COUNT(DISTINCT id) AS total_sessions,
+    COUNT(DISTINCT CASE WHEN user_msg > 0 THEN id END) AS active_sessions,
+    COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_%' THEN id END) AS attempts
+FROM final1
+GROUP BY 1, 2   -- columns 1 and 2 are COUNT() — this crashes
+
+-- ✅ CORRECT — dimension columns first, aggregates after
+SELECT
+    DATE(created_at) AS session_date,   -- col 1: scalar ✓
+    cst_entity,                          -- col 2: scalar ✓
+    COUNT(DISTINCT id) AS total_sessions,
+    COUNT(DISTINCT CASE WHEN user_msg > 0 THEN id END) AS active_sessions,
+    COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_%' THEN id END) AS attempts
+FROM final1
+GROUP BY 1, 2   -- correct: date and entity
+ORDER BY 1 DESC, 2
+```
+
+**Rule:** Always put the grouping dimension columns (`DATE(created_at)`, `cst_entity`, etc.) as the
+**first columns** in SELECT so that `GROUP BY 1, 2` always resolves to scalar expressions.
+Never write a SELECT that starts with an aggregate when `GROUP BY` is present.
+
+### 0.17 Never Inline JSON Extraction Inside `COUNT(DISTINCT CASE WHEN ...)` — Pre-Extract in a CTE First
+
+This is the **root cause of function call success counts returning NULL**.
+
+When you call `JSON_EXTRACT_SCALAR(...)` or `LOWER(JSON_EXTRACT_SCALAR(...))` directly inside a
+`COUNT(DISTINCT CASE WHEN <extraction> = 'success' THEN id END)` expression inside an aggregating
+SELECT, Trino evaluates the extraction across grouped rows and cannot resolve the scalar correctly —
+the result is always `NULL` or `0`.
+
+**The fix is mandatory:** extract every JSON-derived value as a named column in an intermediate CTE
+(e.g. `final1`), then reference the column name in the outer SELECT's COUNT expressions.
+
+```sql
+-- ❌ WRONG — JSON_EXTRACT_SCALAR inline inside COUNT returns NULL
+SELECT
+    COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_raiseServiceRequest%'
+        AND LOWER(JSON_EXTRACT_SCALAR(plugservice_response,
+              '$.data.action_response.raiseServiceRequest.FCResponse.status'))
+              = 'service request is raised'
+        THEN id END) AS raiseServiceRequest_success   -- always NULL
+FROM final1
+GROUP BY 1, 2
+
+-- ✅ CORRECT — extract status as a column in final1, reference by name in outer SELECT
+-- Step 1: final1 CTE — pre-extract all status columns
+final1 AS (
+    SELECT
+        a.id,
+        a.cst_entity,
+        a.created_at,
+        b.workflow,
+        b.plugservice_response,
+        LOWER(JSON_EXTRACT_SCALAR(b.plugservice_response,
+            '$.data.action_response.raiseServiceRequest.FCResponse.status'))
+            AS raiseServiceRequest_status,
+        -- ... one column per ACPS function ...
+    FROM session_data a
+    LEFT JOIN vertical b ON a.id = b.ticket_id
+)
+
+-- Step 2: outer SELECT — reference the pre-extracted column name
+SELECT
+    COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_raiseServiceRequest%'
+        THEN id END) AS raiseServiceRequest_attempts,
+    COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_raiseServiceRequest%'
+        AND raiseServiceRequest_status = 'service request is raised'
+        THEN id END) AS raiseServiceRequest_success
+FROM final1
+GROUP BY 1, 2
+```
+
+**Rule:** For every ACPS function, define a `<function>_status` column in `final1` using
+`LOWER(JSON_EXTRACT_SCALAR(...))`. The outer SELECT must reference those column names directly —
+never call `JSON_EXTRACT_SCALAR` inside a `COUNT` or aggregation expression.
+
+This applies to ALL JSON-derived values used in conditional counting, not just function call status.
+
+### 0.18 Never UNION ALL From a CTE More Than Once — Use a Pre-Aggregated Pivot CTE Instead
+
+**Error:** `QUERY_HAS_TOO_MANY_STAGES` — Number of stages exceeds allowed maximum (200).
+
+This happens when a CTE like `final1` is referenced in 26 separate `UNION ALL` branches
+(one per function). Trino does not cache CTEs — each reference re-runs the full pipeline.
+26 UNION ALL branches × ~10 stages each = 260+ stages → query rejected.
+
+```sql
+-- ❌ WRONG — final1 referenced 26 times → QUERY_HAS_TOO_MANY_STAGES
+function_metrics AS (
+    SELECT 'planUpgrade_soundbox_offers', COUNT(DISTINCT ...) FROM final1
+    UNION ALL
+    SELECT 'checkSoundboxHardwareStatus', COUNT(DISTINCT ...) FROM final1
+    -- × 26 ... each FROM final1 re-runs the entire CTE pipeline
+)
+```
+
+**Correct pattern — two steps:**
+
+**Step 1:** Aggregate ALL functions in one wide CTE (`agg`) with a single pass over `final1`:
+```sql
+agg AS (
+    SELECT
+        COUNT(DISTINCT CASE WHEN user_msg >= 1 THEN id END) AS active_sessions,
+        COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_planUpgrade_soundbox_offers%' THEN id END) AS planUpgrade_soundbox_offers_attempts,
+        COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_planUpgrade_soundbox_offers%' AND planUpgrade_soundbox_offers_status = 'success' THEN id END) AS planUpgrade_soundbox_offers_success,
+        -- ... all 26 functions as columns ...
+    FROM final1
+)
+```
+
+**Step 2:** UNION ALL 26 rows from `agg` — each branch is just a cheap column projection from a single pre-aggregated row:
+```sql
+SELECT function_name, attempts, successes, active_sessions
+FROM (
+    SELECT 'planUpgrade_soundbox_offers' AS function_name,
+           planUpgrade_soundbox_offers_attempts AS attempts,
+           planUpgrade_soundbox_offers_success  AS successes,
+           active_sessions FROM agg
+    UNION ALL
+    SELECT 'checkSoundboxHardwareStatus',
+           checkSoundboxHardwareStatus_attempts,
+           checkSoundboxHardwareStatus_success,
+           active_sessions FROM agg
+    -- × 26 — but agg is ONE row, each branch is O(1), stages stay low
+)
+ORDER BY attempts DESC
+```
+
+**Why this works:** `final1` is referenced only once (inside `agg`). `agg` produces a single row.
+Each UNION ALL branch is a trivial column rename from that one materialized row — Trino can handle
+26 projections from a single row without creating extra execution stages.
+
+**Rule:** Whenever you need function-level rows (one row per function), always aggregate wide first
+into a single-row `agg` CTE, then UNION ALL from `agg` for the row-per-function format. Never
+UNION ALL directly from `final1` or any row-level CTE.
 
 ---
 
@@ -650,6 +845,33 @@ json_extract_scalar(
 | Full intent/entity journey within a session | `vertical_analytics` ordered by `message_id ASC` |
 | Master data for a specific intent in a session | `vertical_analytics.plugservice_response` at that `message_id` |
 | Correctly attributing a session to its primary entity | Use the first or dominant `cst_entity` from `vertical_analytics` (not `support_ticket_details`) |
+
+---
+
+### 6.2 Soundbox / Device Entity Group — Always Query All Three Together
+
+The soundbox/device bot runs from a **single shared prompt**. A session can be tagged with any of three `cst_entity` values depending on what action the user took, but all three represent the same device intent:
+
+| `cst_entity` | When it appears |
+|---|---|
+| `p4bsoundbox` | **Default** — any device session. Stays as the entity even if the user creates a service ticket for a soundbox device (devrev record is created but entity stays `p4bsoundbox`). |
+| `p4bedc` | Session where the device is an **EDC / card machine** AND the user raised a service request. Entity updates from `p4bsoundbox` → `p4bedc` at the point the service ticket is raised. |
+| `p4bAIBot` | Session where the user requested **agent handover** (no service ticket raised). Entity flips from `p4bsoundbox` → `p4bAIBot` at the point of handover. |
+
+**Rule: Any query about soundbox, device, EDC, or any ACPS function must scope `session_data` with:**
+```sql
+AND cst_entity IN ('p4bsoundbox', 'p4bAIBot', 'p4bedc')
+```
+
+```sql
+-- ❌ WRONG — misses all agent handover sessions (tagged p4bAIBot) and EDC escalations (tagged p4bedc)
+WHERE cst_entity = 'p4bsoundbox'
+
+-- ✅ CORRECT — covers the full device funnel across all outcome paths
+WHERE cst_entity IN ('p4bsoundbox', 'p4bAIBot', 'p4bedc')
+```
+
+This applies to ALL device-related queries: function call success rates, session counts, escalation rates, eval scores, L1/L2 issue tags — any metric where the user says "soundbox", "device", "EDC", "card machine", or references any ACPS function.
 
 ---
 
@@ -1576,9 +1798,290 @@ Use the `totals` CTE pattern and include `t.total_analyzed` in `GROUP BY`.
 
 ---
 
+## 14. Function Calls, Workflows & Plugin Response
+
+This section covers the `vertical_analytics_data_snapshot_v3` table in depth —
+specifically how bot actions work, how to parse `plugservice_response`, and how
+to calculate function call success rates.
+
+---
+
+### 14.1 Workflow Prefixes — `ACPS_` vs `CPS_`
+
+Every bot action is identified by a `workflow` value in `vertical_analytics_data_snapshot_v3`.
+There are two distinct prefixes with different meanings:
+
+| Prefix | When it appears | What it represents |
+|--------|----------------|--------------------|
+| `CPS_` | When the bot loads **master data** because an intent was detected from a user message | Read-only data fetch — e.g. showing settlement status, soundbox details, loan info |
+| `ACPS_` | When the bot **executes an action** on behalf of the user | Write/transactional operations — e.g. raising a service request, updating an address, initiating a callback |
+
+**Key distinction:**
+- `CPS_` = the bot understood the user's intent and fetched context data to show them. No user action taken.
+- `ACPS_` = the bot attempted to perform a real action (API call with side effects). This is what has a success/failure outcome worth measuring.
+
+**Only `ACPS_` workflows have a measurable success rate.** `CPS_` workflows are
+informational and do not have a pass/fail outcome.
+
+```sql
+-- Filter to action workflows only
+WHERE workflow LIKE '%ACPS_%'
+
+-- Filter to master data fetch workflows only
+WHERE workflow LIKE '%CPS_%' AND workflow NOT LIKE '%ACPS_%'
+```
+
+---
+
+### 14.2 `plugservice_response` — Structure & Unwrapping
+
+`plugservice_response` in `vertical_analytics_data_snapshot_v3` is a **double-encoded
+JSON string** — the outer layer is a quoted/escaped string, not a native JSON object.
+It must be cleaned before any `JSON_EXTRACT_SCALAR` calls will work.
+
+#### Unwrapping pattern (MHD)
+
+```sql
+REGEXP_REPLACE(
+    REGEXP_REPLACE(
+        REGEXP_REPLACE(
+            REGEXP_REPLACE(
+                REGEXP_REPLACE(
+                    REGEXP_REPLACE(
+                        REPLACE(
+                            CAST(substring(plugservice_response, 2, length(plugservice_response) - 2) AS VARCHAR),
+                            '\', ''          -- strip escaped backslashes
+                        ),
+                        '"tags":"(\[.*?\])"',         '"tags":$1'
+                    ),
+                    '"xActionParams":"(\{.*?\})"',    '"xActionParams":$1'
+                ),
+                '"aiConversationData":"(\{.*?\})"',   '"aiConversationData":$1'
+            ),
+            '"cstMetadata":"(\{.*?\})"',              '"cstMetadata":$1'
+        ),
+        '"merchant_type":"(\[.*?\])"',                '"merchant_type":$1'
+    ),
+    'Other Issues', 'Other_Issues'   -- avoid spaces breaking JSON path parsing
+) AS plugservice_response
+```
+
+**What each step does:**
+1. `substring(..., 2, length-2)` — strips the outer wrapping characters (first and last char)
+2. `REPLACE(..., '\', '')` — removes escape backslashes from the string
+3. Each `REGEXP_REPLACE` — unescapes a specific nested JSON field that was double-encoded as a string (`"field":"{...}"` → `"field":{...}`)
+4. Final replace — `"Other Issues"` → `"Other_Issues"` to prevent space in value from breaking path extraction
+
+#### ⚠️ CRITICAL — Single backslash only, never double
+
+The REPLACE **and every REGEXP_REPLACE pattern** must use **single backslash only**. Using double backslash (`\\`) is the most common cause of all success counts returning NULL.
+
+This is a two-part trap the LLM frequently falls into:
+- It may fix `REPLACE(..., '\', '')` correctly but still write `'"tags":"(\\[.*?\\])"'` with double backslash in the REGEXP_REPLACE patterns.
+- **Both must be single backslash.** Fix one without the other and the JSON still stays malformed.
+
+```sql
+-- ❌ WRONG — double backslash in REPLACE and/or REGEXP_REPLACE
+REPLACE(CAST(... AS VARCHAR), '\\', '')          -- wrong
+'"tags":"(\\[.*?\\])"'                           -- wrong
+'"xActionParams":"(\\{.*?\\})"'                  -- wrong
+
+-- ✅ CORRECT — single backslash everywhere
+REPLACE(CAST(... AS VARCHAR), '\', '')            -- correct
+'"tags":"(\[.*?\])"'                              -- correct
+'"xActionParams":"(\{.*?\})"'                     -- correct
+```
+
+When `'\\'` is used in REPLACE, it looks for two consecutive backslashes and finds none — escape chars stay, JSON is malformed. When `'\\['` is used in REGEXP_REPLACE, the regex is wrong and the nested JSON field stays double-encoded. Either way, every downstream `JSON_EXTRACT_SCALAR` silently returns NULL. Attempt counts will still be non-zero (from `workflow LIKE '%ACPS_...%'`), but every success count will be 0 and every `_status` column NULL.
+
+#### ⚠️ CRITICAL — `vertical` CTE structure: REGEXP_REPLACE only, 6-column GROUP BY, no JSON extraction
+
+The `vertical` CTE has **one job**: clean `plugservice_response` and deduplicate. It must:
+1. Apply REGEXP_REPLACE inside an inner `sub` subquery
+2. Expose exactly **6 columns**: `created_at`, `ticket_id`, `message_id`, `cst_entity`, `workflow`, `plugservice_response`
+3. GROUP BY positional `1, 2, 3, 4, 5, 6` — never by aliases
+
+**JSON extraction (`JSON_EXTRACT_SCALAR`) belongs ONLY in `final1`, never in `vertical`.**
+
+```sql
+-- ❌ WRONG — JSON extraction in vertical, alias used in GROUP BY → COLUMN_NOT_FOUND
+vertical AS (
+    SELECT ..., workflow,
+           LOWER(JSON_EXTRACT_SCALAR(plugservice_response, '$.data.action_response.planUpgrade...')) AS planUpgrade_soundbox_offers_status
+    FROM ( SELECT ... REGEXP_REPLACE(...) AS plugservice_response FROM ... ) sub
+    GROUP BY 1, 2, 3, 4, 5,
+             planUpgrade_soundbox_offers_status   -- ❌ alias in GROUP BY crashes
+)
+
+-- ❌ WRONG — no inner subquery, REGEXP_REPLACE directly in outer SELECT, no GROUP BY
+vertical AS (
+    SELECT ticket_id, workflow, REGEXP_REPLACE(...) AS plugservice_response
+    FROM hive.mhd_crm_cst.vertical_analytics_data_snapshot_v3
+    WHERE ...
+)
+
+-- ✅ CORRECT — REGEXP_REPLACE in sub, outer exposes 6 columns, GROUP BY 1,2,3,4,5,6
+vertical AS (
+    SELECT created_at, ticket_id, message_id,
+           cst_entity, workflow, plugservice_response
+    FROM (
+        SELECT created_at,
+               ticket_id,
+               message_id,
+               cst_entity,
+               workflow,
+               REGEXP_REPLACE(... ) AS plugservice_response   -- cleaning only
+        FROM hive.mhd_crm_cst.vertical_analytics_data_snapshot_v3
+        WHERE dl_last_updated >= DATE '...'
+          AND DATE(created_at) >= DATE '...'
+    ) sub
+    GROUP BY 1, 2, 3, 4, 5, 6   -- positional only — 6 columns
+)
+-- JSON extraction happens AFTER this, in final1:
+-- LOWER(JSON_EXTRACT_SCALAR(b.plugservice_response, '$.data.action_response....status'))
+```
+
+The mandatory CTE order for function call queries:
+`session_data` → `messages_data` → `grouped_sess` → `vertical` (clean only) → `final1` (JSON extract) → `agg` (aggregate) → final SELECT
+
+After unwrapping, extract fields using:
+```sql
+JSON_EXTRACT_SCALAR(plugservice_response, '$.data.action_response.<function_name>.<FCResponse|FEResponse>.status')
+```
+
+#### Response types
+
+| Response type | Meaning |
+|---------------|---------|
+| `FCResponse` | Backend/server-side function response — e.g. settlement info, raise request, track changes |
+| `FEResponse` | Frontend/UI-side response — e.g. show device list, plan upgrade display, test broadcast |
+
+---
+
+### 14.3 Function Call Success Rate — Metric Definition & Query Pattern
+
+#### Definition
+
+```
+Function Call Attempts  = COUNT(DISTINCT session_id WHERE workflow LIKE '%ACPS_<function>%')
+Function Call Successes = COUNT(DISTINCT session_id WHERE workflow LIKE '%ACPS_<function>%'
+                              AND <function>_status = '<success_signal>')
+Function Call Success Rate = successes / NULLIF(attempts, 0)
+```
+
+Important nuances:
+- **Attempts and successes are both counted at session level** (`COUNT(DISTINCT id)`) — not at message level
+- **Success signals vary by function** — most use `= 'success'` but some differ:
+  - `raiseServiceRequest` → `= 'service request is raised'`
+  - Always check the actual response value; do not assume `'success'` universally
+- The status value is extracted with `LOWER(JSON_EXTRACT_SCALAR(...))` and compared in lowercase
+
+#### Two-row pattern per function call
+
+Each function in the final SELECT produces exactly **2 columns**: `<function>_attempts` and `<function>_success`. The rate is computed as:
+
+```sql
+ROUND(
+    COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_<fn>%' AND <fn>_status = 'success' THEN id END) * 100.0
+    / NULLIF(COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_<fn>%' THEN id END), 0),
+2) AS <fn>_success_rate_pct
+```
+
+#### `function_call_failed` — bot-side failure signal
+
+Sessions where the bot itself reported a failure can be counted via:
+```sql
+COUNT(DISTINCT CASE WHEN m.content LIKE '%Sorry we cannot complete the flow as of now%'
+    THEN m.message_id END) AS function_call_failed
+```
+This counts messages where the bot showed the generic failure message — a separate
+signal from API-level `status != 'success'`.
+
+#### Full list of ACPS functions (MHD)
+
+| Function name | Response type | Notes |
+|---------------|--------------|-------|
+| `planUpgrade_soundbox_offers` | FE | Soundbox plan upgrade offer |
+| `checkSoundboxHardwareStatus` | FE | Soundbox device health check |
+| `raiseServiceRequest` | FC | Raise service ticket; success = `'service request is raised'` |
+| `call_me_back` | FE | Schedule callback |
+| `trackDeviceForChanges` | FC | Track device status |
+| `testBroadCast` | FE | Test soundbox broadcast |
+| `showDeviceList` | FE | Show merchant device list |
+| `get_settlement_and_payment_information` | FC | Fetch settlement/payment data |
+| `agent_handover` | FC | Transfer to human agent |
+| `trackSettlementForChanges` | FC | Track settlement changes |
+| `plan_upgrade_payment` | FC | Process plan upgrade payment |
+| `raiseDeactivationRequest` | FE | Raise deactivation request |
+| `update_soundbox_address` | FC | Update soundbox address (old — exclude `_new` variant) |
+| `update_soundbox_address_new` | FC | Update soundbox address (new variant) |
+| `fetch_specific_payment_details` | FE | Fetch specific transaction details |
+| `apply_retention_offer` | FC | Apply retention discount |
+| `showEDCDeviceList` | FE | Show card machine device list |
+| `parkToOtherTeam` | FE | Route session to another team |
+| `call_patch_to_agent` | FE | Live call patch to agent |
+| `checkEDCHardwareResposne` | FE | EDC hardware status check |
+| `update_profile_address` | FC | Update merchant profile address |
+| `parkToSupport` | FC | Route to support queue |
+| `View_Tickets` | FE | Show existing DevRev tickets |
+| `deactivationRequest` | FE | Deactivation (exclude `raiseDeactivationRequest`) |
+| `get_edc_error_code` | FC | Fetch EDC error code |
+| `rental_Details` | FE | Show device rental details |
+
+#### Query type for Help Bot (Type 9)
+
+**Trigger phrases:** "function call success rate", "ACPS success", "which functions
+are failing", "bot action success", "workflow success rate"
+
+**CTEs needed:** `session_data` (with `id NOT LIKE '2-%'` + `source = 100`) +
+`messages_data` + `grouped_sess` + `vertical` (with full plugservice unwrapping) + `final1`
+
+**Key rules:**
+- Always use the 6-layer `REGEXP_REPLACE` unwrap pattern on `plugservice_response` before extracting fields
+- **MANDATORY (§0.15):** Extract ALL function statuses as named columns in `final1` using `LOWER(JSON_EXTRACT_SCALAR(...))` — never extract inline inside `COUNT`. Doing so returns NULL for every success count.
+- The outer SELECT references those pre-extracted column names directly: `AND raiseServiceRequest_status = 'service request is raised'`
+- Group by `DATE(created_at)` and `cst_entity`
+- Use `LOWER()` on all extracted status values before comparison
+- Refer to `master_queries.sql` ("MHD Function Call Success Rate") for the canonical full-query template with all 26 ACPS function columns already defined in `final1`
+
+#### Output format: wide (one row per date/entity) vs. tall (one row per function)
+
+**Type 9A — wide format** (canonical, always safe): all functions as columns in a single SELECT.
+Output: 1 row per (date, entity) with 80+ columns. Use this for dashboards or when grouped by date.
+
+**Type 9B — tall format** (one row per function name): better for charts and sortable tables.
+Use the `agg` + UNION ALL pattern (§0.18) — NEVER UNION ALL directly from `final1`:
+
+```sql
+-- After final1 is defined...
+agg AS (
+    SELECT
+        COUNT(DISTINCT CASE WHEN user_msg >= 1 THEN id END) AS active_sessions,
+        -- one attempt + success column per function
+        COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_planUpgrade_soundbox_offers%' THEN id END) AS planUpgrade_soundbox_offers_a,
+        COUNT(DISTINCT CASE WHEN workflow LIKE '%ACPS_planUpgrade_soundbox_offers%' AND planUpgrade_soundbox_offers_status = 'success' THEN id END) AS planUpgrade_soundbox_offers_s,
+        -- repeat for all 26 functions...
+    FROM final1   -- final1 referenced ONCE
+)
+SELECT function_name, attempts, successes,
+       ROUND(successes * 100.0 / NULLIF(attempts, 0), 2) AS success_rate_pct,
+       active_sessions
+FROM (
+    SELECT 'planUpgrade_soundbox_offers' AS function_name, planUpgrade_soundbox_offers_a AS attempts, planUpgrade_soundbox_offers_s AS successes, active_sessions FROM agg
+    UNION ALL
+    -- repeat for each function — cheap column projections from ONE pre-aggregated row
+)
+ORDER BY attempts DESC
+```
+
+Key: `final1` → `agg` (one reference, one pass, one row out) → UNION ALL column projections. This stays within Trino's 200-stage limit.
+
+---
+
 ## 9. Open Items / To Be Documented
 
-- [ ] `plugservice_response` unwrapping pattern per vertical (exact JSON structure varies — needs per-vertical examples)
+- [x] `plugservice_response` unwrapping pattern — documented in §14.2 (MHD pattern confirmed)
+- [ ] `plugservice_response` unwrapping for CST verticals — may differ from MHD, needs verification
 - [ ] `metrics_json` field structure from eval job — full list of keys, value ranges, and meaning
 - [ ] Campaign tables (`trino_campaigns.py`) — separate section needed
 - [ ] Bounce rate by entity — exact figures for MHD and CST (estimated 35–55%)
