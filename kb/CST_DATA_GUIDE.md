@@ -207,7 +207,7 @@ Paytm CST/MHD customer support datasets.
 10. Does the final SELECT contain `GROUP BY`? → Verify that the positional columns in `GROUP BY 1, 2` are non-aggregate scalar expressions (date, entity). If the SELECT starts with `COUNT(...)`, Trino throws `EXPRESSION_NOT_SCALAR` (§0.15). Always list dimension columns first.
 9. Does the query unwrap `plugservice_response`? → Use **single** backslash `'\'` in REPLACE and `'\['`/`'\{'` in REGEXP_REPLACE patterns. Double backslash `'\\'` silently breaks all JSON extraction → all `_status` columns return NULL. Also wrap REGEXP_REPLACE inside an inner `sub` subquery with `GROUP BY` in the `vertical` CTE (§14.2).
 11. Does the question mention "soundbox", "device", "EDC", "card machine", or any ACPS function related to device? → Filter `session_data` by `cst_entity IN ('p4bsoundbox', 'p4bAIBot', 'p4bedc')` — **NEVER** just `= 'p4bsoundbox'` alone. All three entities share the same bot prompt and represent the same device intent (§6.2).
-12. Before returning any query — self-check: (a) does `messages_data` include `ticket_id, message_id, role, content, type`? (b) does every CTE reference only columns that exist in the tables it selects from? (c) are there any emojis inside the SQL text or comments? (d) do any SQL string literals contain Unicode typographic characters (en dash `–`, em dash `—`, curly quotes `'` `"` `"`, non-breaking space, ellipsis `…`, math minus `−`)? Replace all with plain ASCII equivalents before returning. (e) **BACKSLASH SCAN — if the query contains any REGEXP_REPLACE**: scan every regex pattern string for `\\[`, `\\]`, `\\{`, `\\}`, `\\(`, `\\)` — if any are found, replace with `\[`, `\]`, `\{`, `\}`, `\(`, `\)`. Trino SQL REGEXP_REPLACE uses Java regex; SQL string literals do NOT need double-escaping of brackets/braces. Double backslash (`\\[`) matches a literal backslash followed by `[`, not a literal `[` — this silently breaks all JSON extraction and makes every status column NULL. Single backslash (`\[`) is always correct. Fix any issue before returning.
+12. Before returning any query — self-check: (a) does `messages_data` include `ticket_id, message_id, role, content, type`? (b) does every CTE reference only columns that exist in the tables it selects from? (c) are there any emojis inside the SQL text or comments? (d) do any SQL string literals contain Unicode typographic characters (en dash `–`, em dash `—`, curly quotes `'` `"` `"`, non-breaking space, ellipsis `…`, math minus `−`)? Replace all with plain ASCII equivalents before returning. (e) **BACKSLASH SCAN — if the query contains any REGEXP_REPLACE**: scan every regex pattern string for `\\[`, `\\]`, `\\{`, `\\}`, `\\(`, `\\)` — if any are found, replace with `\[`, `\]`, `\{`, `\}`, `\(`, `\)`. Trino SQL REGEXP_REPLACE uses Java regex; SQL string literals do NOT need double-escaping of brackets/braces. Double backslash (`\\[`) matches a literal backslash followed by `[`, not a literal `[` — this silently breaks all JSON extraction and makes every status column NULL. Single backslash (`\[`) is always correct. (f) **EXPERIMENT QUERY COLUMN CHECK — if `messages_data` is shared between `model_base` and `grouped_sess`**: verify `messages_data` includes ALL of `ticket_id, message_id, role, content` (needed by grouped_sess) AND `expModel, expPrompt` (needed by model_base). The most common error is defining messages_data with only experiment columns (`ticket_id, role, expModel`) and forgetting `message_id` and `content` — this causes `COLUMN_NOT_FOUND` on `m.message_id` and `m.content` inside grouped_sess. Fix any issue before returning.
 13. Does the question mention "agent handover attempts", "agent handover success rate", or "how often the handover function succeeded/failed"? → Use the `vertical` CTE (joined from `vertical_analytics_data_snapshot_v3`) — this holds Paytm's function call data (`workflow LIKE '%ACPS_agent_handover%'`). Do NOT use the DevRev table for this. Does the question ask for "agent handover count", "how many sessions were handed over", or "escalation count"? → Use the `devrev` CTE (`fd_ticket_id IS NOT NULL`) — this is the ticket ingested from the DevRev platform by Paytm's support team after a handover completes. The two tables measure different things (§7c).
 14. Does the question filter on a specific L1/L2 issue label (`out_key_problem_desc`, `out_key_sub_issue_desc`)? → NEVER use `=`. Look up the entity's labels in §A2 and find the closest matching stored label. Build the LIKE pattern from the **full label**: lowercase the entire label, replace every ` - ` with `%`, wrap in `%...%`. Example: stored `"Payout Success - Amount not Credited"` → `LIKE '%payout success%amount not credited%'`. This gives exact-match specificity (only one L1 can match) while handling Unicode dashes and casing. Do NOT use just 2-3 words — a short keyword is ambiguous and may match unintended labels. See §0.2c.
 
@@ -231,6 +231,7 @@ Paytm CST/MHD customer support datasets.
 - Return only derived metrics without base count columns.
 - Filter a soundbox/device/EDC query with `cst_entity = 'p4bsoundbox'` alone — always use `cst_entity IN ('p4bsoundbox', 'p4bAIBot', 'p4bedc')` to capture agent handover and EDC escalation sessions (§6.2).
 - Omit `role` (or any other standard column) from the `messages_data` CTE — always select `ticket_id, message_id, role, content, type` as the minimum set. Missing `role` breaks `grouped_sess` user_msg logic and any downstream role-based filtering (§0.11).
+- Define `messages_data` with only experiment columns (`ticket_id, role, expModel, expPrompt`) when the same CTE is also used by `grouped_sess` — this causes `COLUMN_NOT_FOUND` on `m.message_id` and `m.content`. When `messages_data` serves both `model_base` AND `grouped_sess`, it must include the full merged column set: `ticket_id, message_id, role, content` (base) + `expModel, expPrompt` (experiment). The experiment columns are added ON TOP of the base set, never replacing them (§15.3).
 - Use emojis (🔹, 1️⃣, ✅, ❌, etc.) anywhere inside SQL query text or SQL comments — emojis may appear only in the plain-text report or explanation, never inside a query string.
 - Use Unicode typographic characters inside SQL string literals — en dash `–` (U+2013), em dash `—` (U+2014), curly/smart quotes `'` `"` `"` (U+2018/2019/201C/201D), non-breaking space (U+00A0), ellipsis `…` (U+2026), or math minus `−` (U+2212). These look identical to ASCII in text output but silently return zero rows in Trino string comparisons. Always replace with plain ASCII: `–`/`—` → `-`, smart quotes → straight quotes, non-breaking space → regular space, `…` → `...` (§0.2c).
 - Use `=` exact match to filter `out_key_problem_desc` or `out_key_sub_issue_desc` — always use `LOWER(column) LIKE '%keyword%'`. Exact match fails silently when the user's value has Unicode characters, different casing, or is a partial label copied from a prior result (§0.2c).
@@ -2434,6 +2435,50 @@ model_base AS (
 **`model_base` produces one row per (session, expModel, expPrompt).** A session with two prompts produces two rows. When joined to `final1`, the session row is duplicated — this is intentional. The final `GROUP BY (date, entity, model, prompt)` correctly buckets each combination.
 
 **`messages_data` must be defined once and reused** by both `model_base` and `grouped_sess`. Never create a second inline subquery from the conversation table — it doubles the scan cost.
+
+#### ⚠️ CRITICAL — Column completeness when messages_data serves both model_base and grouped_sess
+
+This is the most frequent error in experiment queries. The LLM defines `messages_data` with only the columns `model_base` needs, then `grouped_sess` fails with `COLUMN_NOT_FOUND` on `m.message_id` or `m.content`.
+
+**`messages_data` must always include the full merged column set:**
+
+| Column | Needed by | Why |
+|---|---|---|
+| `ticket_id` | both | join key |
+| `message_id` | `grouped_sess` | `COUNT(DISTINCT message_id)` for user_msg / assis_msg |
+| `role` | both | `grouped_sess` user/assis split; `model_base` role = '2' filter |
+| `content` (extracted) | `grouped_sess` | CTA exclusion (`NOT LIKE '%CTA has been shown%'`) + function_call_failed check |
+| `expModel` (`COALESCE(...)`) | `model_base` | experiment model identifier |
+| `expPrompt` | `model_base` | experiment prompt identifier |
+| `llmEndPoint` | `model_base` (optional) | endpoint used |
+
+```sql
+-- ❌ WRONG — only experiment columns; grouped_sess will fail with COLUMN_NOT_FOUND
+messages_data AS (
+    SELECT ticket_id, role,
+           COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model) AS expModel,
+           json_extract_scalar(meta, '$.expPrompt') AS expPrompt
+    FROM hive.mhd_crm_cst.ticket_session_conversation_snapshot_v3
+    ...
+)
+
+-- ✅ CORRECT — full merged set; works for both model_base and grouped_sess
+messages_data AS (
+    SELECT
+        ticket_id,
+        message_id,
+        role,
+        COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model) AS expModel,
+        json_extract_scalar(meta, '$.expPrompt') AS expPrompt,
+        json_extract_scalar(meta, '$.llmEndPoint') AS llmEndPoint,
+        REGEXP_REPLACE(JSON_EXTRACT_SCALAR(content, '$.content'), '\\.', '') AS content
+    FROM hive.mhd_crm_cst.ticket_session_conversation_snapshot_v3
+    WHERE dl_last_updated >= DATE '...'
+    AND ticket_id IN (SELECT DISTINCT id FROM session_data)
+)
+```
+
+The experiment columns (`expModel`, `expPrompt`) are always **additions** to the base set — they never replace `message_id` or `content`.
 
 ### 15.4 Multi-Entity Session Implications
 
