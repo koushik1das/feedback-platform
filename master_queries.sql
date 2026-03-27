@@ -546,3 +546,266 @@ FROM final1
 WHERE DATE(created_at) >= DATE '2026-01-01'
 GROUP BY 1, 2
 ORDER BY 1 DESC, 2;
+
+--- Day-wise Entity + Model + Prompt Level Eval Metrics + MSAT + Ticket Creation Analysis ---
+-- IMPORTANT: This query outputs one row per (date, cst_entity, expModel, expPrompt) combination.
+-- A single session can appear in multiple rows if the user switched entities/intents mid-session
+-- (causing different prompts/models to load). This is by design — always analyse at entity+prompt
+-- level, never aggregate across prompts to get a session total.
+-- For weighted averages across prompts, use _sum / _count columns, not AVG of AVG.
+-- devrev CTE: NO cst_entity filter — ticket_type is classified in final1 using session_data entity.
+
+WITH session_data AS (
+    SELECT
+        id,
+        created_at,
+        fd_ticket_id,
+        cst_entity
+    FROM "hive"."mhd_crm_cst"."support_ticket_details_snapshot_v3"
+    WHERE dl_last_updated >= DATE '2025-09-01'
+    AND DATE(created_at) >= DATE '2025-09-01'
+    AND source = 100
+    AND id NOT LIKE '2-%'
+    AND cst_entity NOT IN ('proactiveinitentity', 'p4bwelcomeentity')
+    GROUP BY 1, 2, 3, 4
+),
+
+-- Single scan of conversation table — used by both model_base and grouped_sess.
+-- content extracted here so grouped_sess does not need a second table scan.
+messages_data AS (
+    SELECT
+        ticket_id,
+        message_id,
+        role,
+        COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model) AS expModel,
+        json_extract_scalar(meta, '$.expPrompt') AS expPrompt,
+        json_extract_scalar(meta, '$.llmEndPoint') AS llmEndPoint,
+        REGEXP_REPLACE(JSON_EXTRACT_SCALAR(content, '$.content'), '\\.', '') AS content
+    FROM "hive"."mhd_crm_cst"."ticket_session_conversation_snapshot_v3"
+    WHERE dl_last_updated >= DATE '2025-09-01'
+    AND ticket_id IN (SELECT DISTINCT id FROM session_data)
+),
+
+-- One row per (session, expModel, expPrompt). Excludes proactive/welcome prompts and
+-- system messages. A session with multiple prompts produces multiple rows here —
+-- this is intentional; the final GROUP BY (entity, model, prompt) handles bucketing.
+model_base AS (
+    SELECT
+        ticket_id,
+        expModel,
+        expPrompt
+    FROM messages_data
+    WHERE expModel IS NOT NULL
+    AND expPrompt NOT LIKE '%PROACTIVE%'
+    AND expPrompt NOT LIKE '%WELCOME%'
+    AND role = '2'
+    GROUP BY 1, 2, 3
+),
+
+grouped_sess AS (
+    SELECT
+        s.id,
+        COUNT(DISTINCT CASE WHEN m.role = '1' THEN m.message_id END) AS user_msg,
+        COUNT(DISTINCT CASE WHEN m.role = '2' THEN m.message_id END) AS assis_msg,
+        COUNT(DISTINCT CASE WHEN m.content LIKE '%Sorry we cannot complete the flow as of now%' THEN m.message_id END) AS function_call_failed
+    FROM session_data s
+    LEFT JOIN messages_data m ON s.id = m.ticket_id
+    GROUP BY 1
+),
+
+feedback_status AS (
+    SELECT
+        ticket_id,
+        feedback_status
+    FROM "hive"."mhd_crm_cst"."ticket_meta_snapshot_v3"
+    WHERE dl_last_updated >= DATE '2025-09-01'
+        AND DATE(created_at) >= DATE '2025-09-01'
+    GROUP BY 1, 2
+),
+
+feedback_analyzed AS (
+    SELECT
+        ticket_id,
+        NULLIF(
+            CASE
+                WHEN TRY_CAST(eval_score AS DOUBLE) IS NULL THEN 0
+                ELSE CAST(eval_score AS DOUBLE)
+            END, 0) AS eval_score,
+        out_key_problem_desc,
+        json_extract_scalar(metrics_json, '$.empathy_score') AS empathy_score,
+        json_extract_scalar(metrics_json, '$.topic_drift_count') AS topic_drift_count,
+        json_extract_scalar(metrics_json, '$.resolution_achieved') AS resolution_achieved,
+        json_extract_scalar(metrics_json, '$.sentiment_net_change') AS sentiment_net_change,
+        json_extract_scalar(metrics_json, '$.user_sentiment_start') AS user_sentiment_start,
+        json_extract_scalar(metrics_json, '$.user_sentiment_end') AS user_sentiment_end,
+        json_extract_scalar(metrics_json, '$.intent_incoherence_count') AS intent_incoherence_count,
+        json_extract_scalar(metrics_json, '$.agent_response_repetition') AS agent_response_repetition,
+        json_extract_scalar(metrics_json, '$.response_relevance_score') AS response_relevance_score
+    FROM (
+        SELECT
+            ticket_id,
+            eval_score,
+            metrics_json,
+            out_key_problem_desc,
+            created_at,
+            ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY created_at ASC) AS r
+        FROM "hive"."mhd_crm_cst"."feedback_complete_analyzed_data_snapshot_v3"
+        WHERE dl_last_updated >= DATE '2025-09-01'
+            AND DATE(created_at) >= DATE '2025-09-01'
+    ) sub
+    WHERE r = 1
+),
+
+-- NO cst_entity filter on devrev — stored entity can differ from session entity.
+-- ticket_type classification uses session_data.cst_entity in final1 instead.
+devrev AS (
+    SELECT
+        id,
+        fd_ticket_id
+    FROM "hive"."mhd_cst_ticket"."support_ticket_details_snapshot_v3"
+    WHERE dl_last_updated >= DATE '2025-09-01'
+    AND DATE(created_at) >= DATE '2025-09-01'
+    GROUP BY 1, 2
+),
+
+final1 AS (
+    SELECT
+        a.id,
+        a.created_at,
+        d.fd_ticket_id,
+        -- ticket_type uses session_data cst_entity (not devrev entity) per §7 rule
+        CASE
+            WHEN d.fd_ticket_id IS NOT NULL AND a.cst_entity IN ('p4bsoundbox', 'p4bedc') THEN 'service'
+            WHEN d.fd_ticket_id IS NOT NULL AND a.cst_entity = 'p4bAIBot' THEN 'agent handover'
+            WHEN d.fd_ticket_id IS NOT NULL THEN 'agent handover'
+            ELSE NULL
+        END AS ticket_type,
+        a.cst_entity,
+
+        b.ticket_id,
+        x.expModel,
+        x.expPrompt,
+
+        b.eval_score,
+        CASE
+            WHEN TRY_CAST(b.eval_score AS DOUBLE) >= 0.8 THEN 'Good'
+            WHEN TRY_CAST(b.eval_score AS DOUBLE) >= 0.5 AND TRY_CAST(b.eval_score AS DOUBLE) < 0.8 THEN 'Neutral'
+            WHEN TRY_CAST(b.eval_score AS DOUBLE) < 0.5 AND TRY_CAST(b.eval_score AS DOUBLE) > 0.0 THEN 'Bad'
+            ELSE 'Invalid'
+        END AS eval_score_check,
+        b.empathy_score,
+        b.topic_drift_count,
+        b.resolution_achieved,
+        b.sentiment_net_change,
+        b.user_sentiment_start,
+        b.user_sentiment_end,
+        b.intent_incoherence_count,
+        b.agent_response_repetition,
+        CASE
+            WHEN TRY_CAST(b.response_relevance_score AS DOUBLE) IS NULL THEN NULL
+            ELSE TRY_CAST(b.response_relevance_score AS DOUBLE)
+        END AS response_relevance_score,
+        CASE
+            WHEN b.user_sentiment_start IS NOT NULL AND b.user_sentiment_end IS NOT NULL
+            THEN TRY_CAST(b.user_sentiment_end AS DOUBLE) - TRY_CAST(b.user_sentiment_start AS DOUBLE)
+            ELSE NULL
+        END AS change_in_user_sentiment,
+        b.out_key_problem_desc,
+
+        CASE
+            WHEN COALESCE(g.user_msg, 0) = 0 THEN 'Bounced Session'
+            WHEN g.user_msg >= 1 THEN 'Active Session'
+            ELSE 'Unknown'
+        END AS sess_type,
+        COALESCE(g.user_msg, 0) AS user_msg,
+        COALESCE(g.assis_msg, 0) AS assis_msg,
+        COALESCE(g.function_call_failed, 0) AS function_call_failed,
+
+        f.feedback_status
+    FROM session_data a
+    LEFT JOIN feedback_analyzed b ON a.id = b.ticket_id
+    LEFT JOIN grouped_sess g ON a.id = g.id
+    LEFT JOIN feedback_status f ON a.id = f.ticket_id
+    LEFT JOIN devrev d ON a.id = d.id
+    LEFT JOIN model_base x ON a.id = x.ticket_id
+    WHERE x.expPrompt IS NOT NULL
+)
+
+SELECT
+    DATE(created_at) AS date_,
+    cst_entity,
+    expModel,
+    expPrompt,
+
+    COUNT(DISTINCT id) AS total_sessions,
+    COUNT(DISTINCT CASE WHEN sess_type = 'Active Session' THEN id END) AS active_sessions,
+
+    COUNT(DISTINCT fd_ticket_id) AS fd_tickets,
+    COUNT(DISTINCT CASE WHEN ticket_type = 'service' THEN fd_ticket_id END) AS service_tickets,
+    COUNT(DISTINCT CASE WHEN ticket_type = 'agent handover' THEN fd_ticket_id END) AS ah_tickets,
+
+    COUNT(DISTINCT ticket_id) AS analyzed_sessions,
+    COUNT(DISTINCT CASE WHEN eval_score IS NOT NULL AND eval_score <> 0 THEN ticket_id END) AS eval_completed,
+    AVG(CASE WHEN eval_score IS NOT NULL AND eval_score <> 0 THEN TRY_CAST(eval_score AS DOUBLE) ELSE NULL END) AS avg_eval_score,
+    SUM(CASE WHEN eval_score IS NOT NULL AND eval_score <> 0 THEN eval_score ELSE 0 END) AS eval_score_sum,
+    COUNT(DISTINCT CASE WHEN eval_score IS NOT NULL AND eval_score <> 0 THEN id END) AS eval_session_count,
+
+    COALESCE(COUNT(DISTINCT CASE WHEN feedback_status = '2' THEN id END), 0) AS happy,
+    COALESCE(COUNT(DISTINCT CASE WHEN feedback_status = '3' THEN id END), 0) AS sad,
+
+    COUNT(DISTINCT CASE WHEN eval_score_check = 'Good' THEN id END) AS eval_score_good,
+    COUNT(DISTINCT CASE WHEN eval_score_check = 'Bad' THEN id END) AS eval_score_bad,
+    COUNT(DISTINCT CASE WHEN eval_score_check = 'Neutral' THEN id END) AS eval_score_neutral,
+
+    -- response_relevance_score: avg + sum/count for weighted avg across groups
+    AVG(CASE WHEN response_relevance_score IS NOT NULL AND response_relevance_score <> 0 THEN TRY_CAST(response_relevance_score AS DOUBLE) ELSE NULL END) AS avg_response_relevance_score,
+    SUM(CASE WHEN response_relevance_score IS NOT NULL AND response_relevance_score <> 0 THEN TRY_CAST(response_relevance_score AS DOUBLE) ELSE 0 END) AS response_relevance_score_sum,
+    COUNT(DISTINCT CASE WHEN response_relevance_score IS NOT NULL AND response_relevance_score <> 0 THEN id END) AS response_relevance_score_count,
+
+    -- empathy_score: avg + sum/count
+    AVG(CASE WHEN empathy_score IS NOT NULL THEN TRY_CAST(empathy_score AS DOUBLE) ELSE NULL END) AS avg_empathy_score,
+    SUM(CASE WHEN empathy_score IS NOT NULL THEN TRY_CAST(empathy_score AS DOUBLE) ELSE 0 END) AS empathy_score_sum,
+    COUNT(DISTINCT CASE WHEN empathy_score IS NOT NULL THEN id END) AS empathy_score_count,
+
+    -- topic_drift_count: avg + sum/count
+    AVG(CASE WHEN topic_drift_count IS NOT NULL THEN TRY_CAST(topic_drift_count AS DOUBLE) ELSE NULL END) AS avg_topic_drift,
+    SUM(CASE WHEN topic_drift_count IS NOT NULL THEN TRY_CAST(topic_drift_count AS DOUBLE) ELSE 0 END) AS topic_drift_sum,
+    COUNT(DISTINCT CASE WHEN topic_drift_count IS NOT NULL THEN id END) AS topic_drift_count,
+
+    -- sentiment_net_change: avg + sum/count
+    AVG(CASE WHEN sentiment_net_change IS NOT NULL THEN TRY_CAST(sentiment_net_change AS DOUBLE) ELSE NULL END) AS avg_sentiment_change,
+    SUM(CASE WHEN sentiment_net_change IS NOT NULL THEN TRY_CAST(sentiment_net_change AS DOUBLE) ELSE 0 END) AS sentiment_change_sum,
+    COUNT(DISTINCT CASE WHEN sentiment_net_change IS NOT NULL THEN id END) AS sentiment_change_count,
+
+    -- resolution_achieved: avg + sum/count
+    ROUND(AVG(
+        CASE
+            WHEN resolution_achieved IS NOT NULL AND TRY_CAST(resolution_achieved AS DOUBLE) > 0
+            THEN TRY_CAST(resolution_achieved AS DOUBLE)
+            ELSE NULL
+        END
+    ), 3) AS avg_resolution_achieved,
+    SUM(CASE WHEN resolution_achieved IS NOT NULL AND TRY_CAST(resolution_achieved AS DOUBLE) > 0 THEN TRY_CAST(resolution_achieved AS DOUBLE) ELSE 0 END) AS resolution_achieved_sum,
+    COUNT(DISTINCT CASE WHEN resolution_achieved IS NOT NULL AND TRY_CAST(resolution_achieved AS DOUBLE) > 0 THEN id END) AS resolution_achieved_count,
+
+    COUNT(DISTINCT CASE WHEN TRY_CAST(change_in_user_sentiment AS DOUBLE) > 0.00 THEN id END) AS positive_user_sentiment,
+    COUNT(DISTINCT CASE WHEN TRY_CAST(change_in_user_sentiment AS DOUBLE) = 0 THEN id END) AS neutral_user_sentiment,
+    COUNT(DISTINCT CASE WHEN TRY_CAST(change_in_user_sentiment AS DOUBLE) < 0.00 THEN id END) AS negative_user_sentiment,
+
+    COUNT(DISTINCT CASE
+        WHEN intent_incoherence_count IS NOT NULL
+        AND TRY_CAST(intent_incoherence_count AS INTEGER) > 0
+        THEN ticket_id
+    END) AS intent_incoherence_count,
+
+    COUNT(DISTINCT CASE
+        WHEN agent_response_repetition IS NOT NULL
+        AND TRY_CAST(agent_response_repetition AS INTEGER) > 0
+        THEN ticket_id
+    END) AS agent_response_repetition,
+
+    COUNT(DISTINCT CASE WHEN function_call_failed > 0 THEN id END) AS function_call_failed
+
+FROM final1
+WHERE expModel IS NOT NULL
+GROUP BY 1, 2, 3, 4;

@@ -2371,3 +2371,111 @@ Key: `final1` → `agg` (one reference, one pass, one row out) → UNION ALL col
 - [ ] Best approach for attributing a session to its "primary" entity when the user touched multiple entities (first vs dominant vs last from `vertical_analytics`)
 - [ ] Additional metrics to document: resolution rate (from `metrics_json.resolution_achieved`), empathy score, response relevance score, sentiment net change — exact formulas once confirmed
 - [ ] MSAT response rate benchmarks by entity
+
+---
+
+## 15. Experimentation Framework — Model & Prompt A/B Testing
+
+### 15.1 Architecture Overview
+
+Paytm's bot backend runs an **experimentation module** that allows multiple prompts and models to run simultaneously in production. This enables A/B testing of LLM performance at the entity + prompt level.
+
+**Session lifecycle:**
+1. User opens the bot → **Proactive module** runs first. Entity = `proactiveinitentity` or `p4bwelcomeentity`. This shows CTAs or a welcome message before the user interacts. No model/prompt experiment data is captured here.
+2. User clicks a CTA or types a message → **Intent detection** runs on the user's input.
+3. The detected intent maps to a `cst_entity`. The backend loads the **prompt** configured for that entity.
+4. If an experiment is running for that entity, the **model** is assigned based on experiment config logic — either deterministic (merchant ID / customer ID bucket) or random traffic split. Either model could load for the same entity in the same time window.
+5. The bot's assistant response is written to `ticket_session_conversation_snapshot_v3` with `meta.expModel` and `meta.expPrompt` populated.
+6. If the user switches topics mid-session, a **different entity** may be detected, causing a different prompt and potentially a different model to load — the same session can accumulate multiple (expModel, expPrompt) combinations across its messages.
+
+**Key implication:** The same session ID can appear under multiple (cst_entity, expModel, expPrompt) combinations if the user's intent changed. Always analyse at `entity + prompt` level, never aggregate totals across prompts for the same session set — you will double-count.
+
+### 15.2 Where expModel and expPrompt Live
+
+Both values are stored per-message in the `meta` JSON column of `ticket_session_conversation_snapshot_v3`:
+
+| Field | JSON path | Description |
+|---|---|---|
+| `expModel` | `$.expModel` | The model assigned by the experiment config. If absent (no experiment running), falls back to `llm_model` column. Use `COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model)` |
+| `expPrompt` | `$.expPrompt` | The prompt name loaded for this entity/intent. Absent for proactive/welcome messages. |
+| `llmEndPoint` | `$.llmEndPoint` | The LLM endpoint URL used for this message. |
+| `intent` | `$.intent` | The detected intent for this message. |
+
+**Only assistant messages (role = `'2'`) carry experiment metadata.** User messages (role = `'1'`) do not.
+
+### 15.3 The `model_base` CTE Pattern
+
+For any query involving experiment analysis, use this pattern to extract (session, model, prompt) combinations:
+
+```sql
+messages_data AS (
+    SELECT
+        ticket_id, message_id, role,
+        COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model) AS expModel,
+        json_extract_scalar(meta, '$.expPrompt') AS expPrompt,
+        json_extract_scalar(meta, '$.llmEndPoint') AS llmEndPoint,
+        REGEXP_REPLACE(JSON_EXTRACT_SCALAR(content, '$.content'), '\\.', '') AS content
+    FROM hive.mhd_crm_cst.ticket_session_conversation_snapshot_v3
+    WHERE dl_last_updated >= DATE '...'
+    AND ticket_id IN (SELECT DISTINCT id FROM session_data)
+),
+
+model_base AS (
+    SELECT ticket_id, expModel, expPrompt
+    FROM messages_data
+    WHERE expModel IS NOT NULL
+      AND expPrompt NOT LIKE '%PROACTIVE%'    -- exclude proactive module messages
+      AND expPrompt NOT LIKE '%WELCOME%'       -- exclude welcome screen messages
+      AND role = '2'                           -- assistant messages only
+    GROUP BY 1, 2, 3
+)
+```
+
+**`model_base` produces one row per (session, expModel, expPrompt).** A session with two prompts produces two rows. When joined to `final1`, the session row is duplicated — this is intentional. The final `GROUP BY (date, entity, model, prompt)` correctly buckets each combination.
+
+**`messages_data` must be defined once and reused** by both `model_base` and `grouped_sess`. Never create a second inline subquery from the conversation table — it doubles the scan cost.
+
+### 15.4 Multi-Entity Session Implications
+
+Because a session can touch multiple entities (and thus multiple prompts/models), the experiment output table has this property:
+
+- **SUM of total_sessions across all prompts ≥ actual unique session count.** Sessions that switched prompts are counted once per prompt bucket.
+- **Always filter to one (entity, prompt) combination** when comparing metrics between experiments. Never sum total_sessions across rows to get a universe total.
+- **cst_entity in the output comes from `session_data` (session-level)**, which is the final entity recorded on the session. For sessions where the user switched entities, this may not match the entity active when a specific prompt loaded. This is a known limitation — for precise message-level entity attribution, `vertical_analytics_data_snapshot_v3` would need to be joined.
+
+### 15.5 Weighted Average Rule — Always Output SUM + COUNT Alongside AVG
+
+When this query is grouped by (entity, model, prompt) and you later want to compute a combined average across multiple groups (e.g. "what is the overall avg_eval_score for this model across all entities?"), a simple `AVG(avg_eval_score)` is wrong — it treats groups with 2 sessions the same as groups with 2000 sessions.
+
+**Rule: every AVG metric in an experiment query must be accompanied by a `_sum` and a `_count` column.** Use `_sum / _count` to compute correct weighted averages post-query.
+
+| Metric | AVG column | SUM column | COUNT column |
+|---|---|---|---|
+| Eval score | `avg_eval_score` | `eval_score_sum` | `eval_session_count` |
+| Response relevance | `avg_response_relevance_score` | `response_relevance_score_sum` | `response_relevance_score_count` |
+| Empathy score | `avg_empathy_score` | `empathy_score_sum` | `empathy_score_count` |
+| Topic drift | `avg_topic_drift` | `topic_drift_sum` | `topic_drift_count` |
+| Sentiment change | `avg_sentiment_change` | `sentiment_change_sum` | `sentiment_change_count` |
+| Resolution achieved | `avg_resolution_achieved` | `resolution_achieved_sum` | `resolution_achieved_count` |
+
+This applies to any query that aggregates eval metrics at a sub-session granularity (entity, prompt, model, date). The master query in `master_queries.sql` (§4) already implements this pattern — follow it exactly.
+
+### 15.6 Proactive/Welcome Entity Exclusion
+
+The `session_data` CTE for experiment queries **must exclude** proactive and welcome entities:
+
+```sql
+AND cst_entity NOT IN ('proactiveinitentity', 'p4bwelcomeentity')
+```
+
+These entities represent the pre-intent phase of a session — before the user has interacted and before any real prompt was loaded. Including them inflates session counts and pollutes entity-level experiment metrics.
+
+### 15.7 Query Routing for Experiment Questions
+
+| User asks about | CTEs to include |
+|---|---|
+| Which model/prompt is running for an entity | `session_data` + `messages_data` + `model_base` |
+| Eval metrics by model or prompt | Full experiment query pattern (§master query 4) |
+| Comparing two prompts/models | Filter final output to specific (entity, expPrompt) or (entity, expModel) values |
+| Session count for an experiment | `total_sessions` column — but remember multi-entity inflation rule (§15.4) |
+| Weighted avg across experiment groups | Use `_sum / _count` columns, not `AVG(avg_...)` |
