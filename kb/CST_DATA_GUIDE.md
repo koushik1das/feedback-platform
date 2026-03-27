@@ -321,10 +321,31 @@ Paytm CST/MHD customer support datasets.
 10. Does the final SELECT contain `GROUP BY`? → Verify that the positional columns in `GROUP BY 1, 2` are non-aggregate scalar expressions (date, entity). If the SELECT starts with `COUNT(...)`, Trino throws `EXPRESSION_NOT_SCALAR` (§0.15). Always list dimension columns first.
 9. Does the query unwrap `plugservice_response`? → Use **single** backslash `'\'` in REPLACE and `'\['`/`'\{'` in REGEXP_REPLACE patterns. Double backslash `'\\'` silently breaks all JSON extraction → all `_status` columns return NULL. Also wrap REGEXP_REPLACE inside an inner `sub` subquery with `GROUP BY` in the `vertical` CTE (§14.2).
 11. Does the question mention "soundbox", "device", "EDC", "card machine", or any ACPS function related to device? → Filter `session_data` by `cst_entity IN ('p4bsoundbox', 'p4bAIBot', 'p4bedc')` — **NEVER** just `= 'p4bsoundbox'` alone. All three entities share the same bot prompt and represent the same device intent (§6.2).
-12. Before returning any query — self-check: (a) does `messages_data` include `ticket_id, message_id, role, content, type`? (b) does every CTE reference only columns that exist in the tables it selects from? (c) are there any emojis inside the SQL text or comments? (d) do any SQL string literals contain Unicode typographic characters (en dash `–`, em dash `—`, curly quotes `'` `"` `"`, non-breaking space, ellipsis `…`, math minus `−`)? Replace all with plain ASCII equivalents before returning. (e) **BACKSLASH SCAN — if the query contains any REGEXP_REPLACE**: scan every regex pattern string for `\\[`, `\\]`, `\\{`, `\\}`, `\\(`, `\\)` — if any are found, replace with `\[`, `\]`, `\{`, `\}`, `\(`, `\)`. Trino SQL REGEXP_REPLACE uses Java regex; SQL string literals do NOT need double-escaping of brackets/braces. Double backslash (`\\[`) matches a literal backslash followed by `[`, not a literal `[` — this silently breaks all JSON extraction and makes every status column NULL. Single backslash (`\[`) is always correct. (f) **EXPERIMENT QUERY COLUMN CHECK — if `messages_data` is shared between `model_base` and `grouped_sess`**: verify `messages_data` includes ALL of `ticket_id, message_id, role, content` (needed by grouped_sess) AND `expModel, expPrompt` (needed by model_base). The most common error is defining messages_data with only experiment columns (`ticket_id, role, expModel`) and forgetting `message_id` and `content` — this causes `COLUMN_NOT_FOUND` on `m.message_id` and `m.content` inside grouped_sess. Fix any issue before returning.
+12. Before returning any query — self-check: (a) does `messages_data` include `ticket_id, message_id, role, content, type`? (b) does every CTE reference only columns that exist in the tables it selects from? (c) are there any emojis inside the SQL text or comments? (d) do any SQL string literals contain Unicode typographic characters (en dash `–`, em dash `—`, curly quotes `'` `"` `"`, non-breaking space, ellipsis `…`, math minus `−`)? Replace all with plain ASCII equivalents before returning. (e) **BACKSLASH SCAN — if the query contains any REGEXP_REPLACE**: scan every regex pattern string for `\\[`, `\\]`, `\\{`, `\\}`, `\\(`, `\\)` — if any are found, replace with `\[`, `\]`, `\{`, `\}`, `\(`, `\)`. Trino SQL REGEXP_REPLACE uses Java regex; SQL string literals do NOT need double-escaping of brackets/braces. Double backslash (`\\[`) matches a literal backslash followed by `[`, not a literal `[` — this silently breaks all JSON extraction and makes every status column NULL. Single backslash (`\[`) is always correct. (f) **EXPERIMENT QUERY COLUMN CHECK — if `messages_data` is shared between `model_base` and `grouped_sess`**: verify `messages_data` includes ALL of `ticket_id, message_id, role, content` (needed by grouped_sess) AND `expModel, expPrompt` (needed by model_base). The most common error is defining messages_data with only experiment columns (`ticket_id, role, expModel`) and forgetting `message_id` and `content` — this causes `COLUMN_NOT_FOUND` on `m.message_id` and `m.content` inside grouped_sess. Fix any issue before returning. (g) **`llm_model` COALESCE CHECK — if the query extracts `expModel` from the conversation table**: verify `expModel` is built as `COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model)` — NOT `json_extract_scalar(meta, '$.expModel')` alone. `llm_model` is a direct column on `ticket_session_conversation_snapshot_v3` and is the fallback model for sessions not enrolled in any experiment. Omitting it causes non-experiment sessions to get NULL expModel and silently disappear from all model-level analysis. If you see `json_extract_scalar(meta, '$.expModel') AS expModel` anywhere without the COALESCE wrapper, fix it before returning.
 13. Does the question mention "agent handover attempts", "agent handover success rate", or "how often the handover function succeeded/failed"? → Use the `vertical` CTE (joined from `vertical_analytics_data_snapshot_v3`) — this holds Paytm's function call data (`workflow LIKE '%ACPS_agent_handover%'`). Do NOT use the DevRev table for this. Does the question ask for "agent handover count", "how many sessions were handed over", or "escalation count"? → Use the `devrev` CTE (`fd_ticket_id IS NOT NULL`) — this is the ticket ingested from the DevRev platform by Paytm's support team after a handover completes. The two tables measure different things (§7c).
 14. Does the question filter on a specific L1/L2 issue label (`out_key_problem_desc`, `out_key_sub_issue_desc`)? → NEVER use `=`. Look up the entity's labels in §A2 and find the closest matching stored label. Build the LIKE pattern from the **full label**: lowercase the entire label, replace every ` - ` with `%`, wrap in `%...%`. Example: stored `"Payout Success - Amount not Credited"` → `LIKE '%payout success%amount not credited%'`. This gives exact-match specificity (only one L1 can match) while handling Unicode dashes and casing. Do NOT use just 2-3 words — a short keyword is ambiguous and may match unintended labels. See §0.2c.
-15. Does the question ask for analysis **by model** (`expModel`) or **by prompt** (`expPrompt`)? → Look up §A3 before writing SQL. (a) Determine if the entities are MHD (`p4b*`) or CST (all others). (b) Use the model→prompts reverse lookup (§A3.1 for MHD, §A3.2 for CST) to find every `expPrompt` where that model appears. (c) Filter **both** `expModel = '...'` AND `expPrompt IN (...)`. Never filter by `expModel` alone — the same model name (e.g. `GPT_OSS_120B_INVOKE_STREAM`) serves many different prompts and mixing sessions from different prompts produces meaningless averages. Use the full model name from the alias table in §A3 header, not the shorthand.
+15. Does the question ask for analysis **by model** (`expModel`) or **by prompt** (`expPrompt`)? → This is a mandatory lookup, not a hint. Follow these steps exactly — the same discipline as looking up L1 labels in §A2:
+   (a) Identify the vertical: does the query entity start with `p4b`? → MHD (use §A3.1). Otherwise → CST (use §A3.2).
+   (b) Use the **model→prompts reverse lookup** at the bottom of §A3.1 or §A3.2 to find every `expPrompt` value where that model appears. Copy the exact strings — do not paraphrase or abbreviate.
+   (c) Add BOTH filters to the query: `expModel = '<full-model-name>'` AND `expPrompt IN ('<prompt1>', '<prompt2>', ...)`. Use the full model name from the alias table at the top of §A3, not the shorthand.
+   (d) If the query asks about a specific entity (e.g. Soundbox → `p4bsoundbox, p4bAIBot, p4bedc`), cross-check the §A3.1 prompt table to confirm those entities appear in each prompt in your `IN` list. Exclude any prompt where those entities are not listed.
+   (e) Never filter by `expModel` alone. The same model runs on many different prompts; filtering by model only mixes sessions from unrelated experiments and produces meaningless averages. There is no valid reason to omit the `expPrompt IN (...)` filter from a model-level query.
+
+   **Example — "GPT120B eval score for Soundbox (MHD) last 7 days":**
+   Step (a): Soundbox entities are `p4b*` → MHD → use §A3.1.
+   Step (b): §A3.1 GPT120B reverse lookup → `DEVICE_CONTEXTUAL_PROMPT`, `DEVICE_CONTEXTUAL_PROMPT_EXPERIMENT_HARWARE_JINJA`, `LENDING_CONTEXTUAL_PROMPT`, `Lending_Contextual_Experiment_Prompt`, `LENDING_CONTEXTUAL_LANG_EXP_PROMPT`, `SETTLEMENT_CONTEXTUAL_PROMPT`, `SETTLEMENT_CONTEXTUAL_EXPERIMENT_PROMPT`, `SETTLEMENT_CONTEXTUAL_COLLECTION_PILLS_PROMPT`, `P4B_PROFILE_CONTEXTUAL_PROMPT`, `P4B_PROFILE_CONTEXTUAL_PROMPT_LANGUAGE_EXPERIMENT`, `WEALTH_CONTEXTUAL_PROMPT`, `WEALTH_CONTEXTUAL_LANG_EXP_PROMPT`.
+   Step (c)+(d): All these prompts include p4bsoundbox → keep all. Add to WHERE:
+   ```sql
+   AND mb.expModel = 'GPT_OSS_120B_INVOKE_STREAM'
+   AND mb.expPrompt IN (
+     'DEVICE_CONTEXTUAL_PROMPT','DEVICE_CONTEXTUAL_PROMPT_EXPERIMENT_HARWARE_JINJA',
+     'LENDING_CONTEXTUAL_PROMPT','Lending_Contextual_Experiment_Prompt',
+     'LENDING_CONTEXTUAL_LANG_EXP_PROMPT','SETTLEMENT_CONTEXTUAL_PROMPT',
+     'SETTLEMENT_CONTEXTUAL_EXPERIMENT_PROMPT','SETTLEMENT_CONTEXTUAL_COLLECTION_PILLS_PROMPT',
+     'P4B_PROFILE_CONTEXTUAL_PROMPT','P4B_PROFILE_CONTEXTUAL_PROMPT_LANGUAGE_EXPERIMENT',
+     'WEALTH_CONTEXTUAL_PROMPT','WEALTH_CONTEXTUAL_LANG_EXP_PROMPT'
+   )
+   ```
 
 **You must NEVER:**
 - Start a query from the eval, devrev, or meta table — always from `session_data` CTE.
@@ -345,9 +366,10 @@ Paytm CST/MHD customer support datasets.
 - Write the `vertical` CTE without an inner subquery + GROUP BY — always wrap REGEXP_REPLACE in a `sub` subquery and GROUP BY the outer columns (§14.2).
 - Return only derived metrics without base count columns.
 - Filter a soundbox/device/EDC query with `cst_entity = 'p4bsoundbox'` alone — always use `cst_entity IN ('p4bsoundbox', 'p4bAIBot', 'p4bedc')` to capture agent handover and EDC escalation sessions (§6.2).
-- Omit `role` (or any other standard column) from the `messages_data` CTE — always select `ticket_id, message_id, role, content, type` as the minimum set. Missing `role` breaks `grouped_sess` user_msg logic and any downstream role-based filtering (§0.11).
+- Omit `role` (or any other standard column) from the `messages_data` CTE — always select `ticket_id, message_id, role, content, type` as the minimum base set. When experiment analysis is needed, also add `COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model) AS expModel` and `json_extract_scalar(meta, '$.expPrompt') AS expPrompt`. Missing `role` breaks `grouped_sess`; missing `llm_model` (via the COALESCE) silently drops all non-experiment sessions from model analysis (§0.11, §15.3).
 - Define `messages_data` with only experiment columns (`ticket_id, role, expModel, expPrompt`) when the same CTE is also used by `grouped_sess` — this causes `COLUMN_NOT_FOUND` on `m.message_id` and `m.content`. When `messages_data` serves both `model_base` AND `grouped_sess`, it must include the full merged column set: `ticket_id, message_id, role, content` (base) + `expModel, expPrompt` (experiment). The experiment columns are added ON TOP of the base set, never replacing them (§15.3).
-- Filter by `expModel` alone without also filtering `expPrompt` — the same model runs on many different prompts; filtering by model only mixes sessions from different experiments, producing meaningless averages. Always look up §A3 to find the matching prompts and add `expPrompt IN (...)` alongside `expModel = '...'`.
+- Filter by `expModel` alone without also filtering `expPrompt` — the same model runs on many different prompts; filtering by model only mixes sessions from different experiments, producing meaningless averages. Always look up §A3 to find the matching prompts and add `expPrompt IN (...)` alongside `expModel = '...'`. This is mandatory — not optional — for every model-level query (pre-flight item 15).
+- Use `json_extract_scalar(meta, '$.expModel') AS expModel` without wrapping in `COALESCE(..., llm_model)` — non-experiment sessions store the model in the `llm_model` column directly, not in `meta`. Without the fallback, those sessions get NULL expModel, pass the `WHERE expModel IS NOT NULL` filter as excluded, and disappear from all model-level analysis. Always write `COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model) AS expModel`.
 - Use emojis (🔹, 1️⃣, ✅, ❌, etc.) anywhere inside SQL query text or SQL comments — emojis may appear only in the plain-text report or explanation, never inside a query string.
 - Use Unicode typographic characters inside SQL string literals — en dash `–` (U+2013), em dash `—` (U+2014), curly/smart quotes `'` `"` `"` (U+2018/2019/201C/201D), non-breaking space (U+00A0), ellipsis `…` (U+2026), or math minus `−` (U+2212). These look identical to ASCII in text output but silently return zero rows in Trino string comparisons. Always replace with plain ASCII: `–`/`—` → `-`, smart quotes → straight quotes, non-breaking space → regular space, `…` → `...` (§0.2c).
 - Use `=` exact match to filter `out_key_problem_desc` or `out_key_sub_issue_desc` — always use `LOWER(column) LIKE '%keyword%'`. Exact match fails silently when the user's value has Unicode characters, different casing, or is a partial label copied from a prior result (§0.2c).
@@ -661,8 +683,14 @@ grouped_sess AS (
 )
 
 -- ✅ CORRECT — separate CTE first, then join in grouped_sess
--- Mandatory minimum columns: ticket_id, message_id, role, content, type
--- Never omit role (needed for user_msg logic) or type (needed for TRANSCRIPT filter)
+-- Mandatory minimum columns for a standard query:
+--   ticket_id, message_id, role, content, type
+-- When experiment columns (expModel, expPrompt) are also needed, ALWAYS add:
+--   COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model) AS expModel
+--   json_extract_scalar(meta, '$.expPrompt')                     AS expPrompt
+-- NOTE: llm_model is a direct column on the table — it is the fallback when meta.expModel
+-- is absent (sessions not enrolled in any experiment). NEVER use json_extract_scalar alone
+-- for expModel — ALWAYS use COALESCE(..., llm_model) so non-experiment sessions are included.
 messages_data AS (
     SELECT ticket_id, message_id, role, content, type
     FROM hive.mhd_crm_cst.ticket_session_conversation_snapshot_v3
@@ -994,7 +1022,8 @@ All table names below are schema-relative. Prefix with the correct schema above.
   - `role` — `1` = user, `2` = assistant/bot
   - `type` — message type (`TRANSCRIPT`, `function_call`, `function_call_output`, or NULL for normal chat)
   - `content` — message content (may be raw JSON; requires parsing)
-  - `meta` — JSON blob with UI metadata (hidden flag, CTA options, etc.)
+  - `meta` — JSON blob with UI metadata and experiment fields (`expModel`, `expPrompt`, `llmEndPoint`, `intent`). Use `json_extract_scalar(meta, '$.expModel')` etc. to unpack.
+  - `llm_model` — direct column; the model identifier for sessions NOT enrolled in an experiment. Use `COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model) AS expModel` to get model for ALL sessions. Never use `json_extract_scalar(meta, '$.expModel')` alone — non-experiment sessions have NULL in meta and will be excluded.
   - `created_at` — message timestamp
   - `question_language_code` — detected language of the message
   - `dl_last_updated` — Trino partition column. Required in every WHERE clause.
@@ -2564,16 +2593,28 @@ This is the most frequent error in experiment queries. The LLM defines `messages
 | `message_id` | `grouped_sess` | `COUNT(DISTINCT message_id)` for user_msg / assis_msg |
 | `role` | both | `grouped_sess` user/assis split; `model_base` role = '2' filter |
 | `content` (extracted) | `grouped_sess` | CTA exclusion (`NOT LIKE '%CTA has been shown%'`) + function_call_failed check |
-| `expModel` (`COALESCE(...)`) | `model_base` | experiment model identifier |
-| `expPrompt` | `model_base` | experiment prompt identifier |
-| `llmEndPoint` | `model_base` (optional) | endpoint used |
+| `llm_model` | `model_base` (via COALESCE) | direct column; fallback model identifier for non-experiment sessions. Used inside `COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model)`. Omitting this column makes non-experiment sessions disappear from model analysis — they get NULL expModel and are filtered out by `WHERE expModel IS NOT NULL`. |
+| `expModel` (`COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model)`) | `model_base` | final model identifier covering both experiment and non-experiment sessions |
+| `expPrompt` (`json_extract_scalar(meta, '$.expPrompt')`) | `model_base` | experiment prompt identifier |
+| `llmEndPoint` (`json_extract_scalar(meta, '$.llmEndPoint')`) | `model_base` (optional) | endpoint used |
 
 ```sql
--- ❌ WRONG — only experiment columns; grouped_sess will fail with COLUMN_NOT_FOUND
+-- ❌ WRONG (a) — only experiment columns; grouped_sess will fail with COLUMN_NOT_FOUND on m.message_id / m.content
 messages_data AS (
     SELECT ticket_id, role,
            COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model) AS expModel,
            json_extract_scalar(meta, '$.expPrompt') AS expPrompt
+    FROM hive.mhd_crm_cst.ticket_session_conversation_snapshot_v3
+    ...
+)
+
+-- ❌ WRONG (b) — expModel uses json_extract_scalar alone without COALESCE fallback to llm_model;
+--               non-experiment sessions get NULL expModel and vanish from model analysis
+messages_data AS (
+    SELECT ticket_id, message_id, role,
+           json_extract_scalar(meta, '$.expModel') AS expModel,  -- BUG: missing llm_model fallback
+           json_extract_scalar(meta, '$.expPrompt') AS expPrompt,
+           REGEXP_REPLACE(JSON_EXTRACT_SCALAR(content, '$.content'), '\\.', '') AS content
     FROM hive.mhd_crm_cst.ticket_session_conversation_snapshot_v3
     ...
 )
@@ -2594,7 +2635,7 @@ messages_data AS (
 )
 ```
 
-The experiment columns (`expModel`, `expPrompt`) are always **additions** to the base set — they never replace `message_id` or `content`.
+The experiment columns (`expModel`, `expPrompt`) are always **additions** to the base set — they never replace `message_id` or `content`. And `expModel` must always be `COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model)` — never just `json_extract_scalar(meta, '$.expModel')` alone.
 
 ### 15.4 Multi-Entity Session Implications
 
