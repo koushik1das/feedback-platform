@@ -501,13 +501,30 @@ function BotActions({ sql, columns, rows }) {
 
       {/* SQL */}
       {showSql && (
-        <pre style={{
-          padding: '.65rem .85rem', borderRadius: 8,
-          background: '#0f172a', color: '#e2e8f0', fontSize: '.71rem',
-          overflowX: 'auto', lineHeight: 1.6, whiteSpace: 'pre-wrap', margin: 0,
-        }}>
-          {sql}
-        </pre>
+        <div style={{ position: 'relative' }}>
+          <button
+            onClick={() => { navigator.clipboard.writeText(sql); }}
+            title="Copy SQL"
+            style={{
+              position: 'absolute', top: 6, right: 8,
+              background: '#1e293b', border: '1px solid #334155',
+              borderRadius: 5, padding: '2px 8px', cursor: 'pointer',
+              color: '#94a3b8', fontSize: '.68rem', fontFamily: 'monospace',
+              lineHeight: 1.6, zIndex: 1,
+            }}
+            onMouseEnter={e => { e.currentTarget.style.color = '#e2e8f0'; e.currentTarget.style.borderColor = '#64748b'; }}
+            onMouseLeave={e => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.borderColor = '#334155'; }}
+          >
+            copy
+          </button>
+          <pre style={{
+            padding: '.65rem .85rem', borderRadius: 8,
+            background: '#0f172a', color: '#e2e8f0', fontSize: '.71rem',
+            overflowX: 'auto', lineHeight: 1.6, whiteSpace: 'pre-wrap', margin: 0,
+          }}>
+            {sql}
+          </pre>
+        </div>
       )}
     </div>
   );

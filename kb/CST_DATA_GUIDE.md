@@ -268,24 +268,36 @@ MHD entity shorthand: **all-mhd-7** = `p4bAIBot, p4bbusinessloan, p4bedc, p4bpay
 
 ### §A3.3 — Pre-flight Rule: Model-Level Queries
 
-When the user asks for analysis by **model** (`expModel`), always:
-1. Determine the vertical (MHD or CST) from context or the `cst_entity` values.
-2. Look up §A3.1 (MHD) or §A3.2 (CST) reverse lookup to find all `expPrompt` values where that model appears.
-3. Add **both** filters: `expModel = '...'` AND `expPrompt IN ('prompt1', 'prompt2', ...)`
-4. If the user is comparing two models, use separate CTEs or CASE expressions — do not mix sessions with different prompts unless the user explicitly wants the full scope.
+When the user asks for analysis by **model** (`expModel`), use **expPrompt as the scope filter, not expModel**. This lets new models show up automatically without changing the query.
 
-**Example** — "GPT120B vs LLAMA70B eval score for Soundbox (MHD) in March 2026":
+**Pattern:**
+1. Determine the vertical (MHD or CST) from context or the `cst_entity` values.
+2. Look up §A3.1 (MHD) or §A3.2 (CST) — collect all `expPrompt` values where **any** of the queried entities appear. This is the complete experiment scope for those entities.
+3. Add a single flat `expPrompt IN (...)` filter. Do NOT add a hard `expModel IN (...)` or per-model OR blocks — models are dynamic and new ones get added; the prompt set defines the valid experiment scope.
+4. `GROUP BY expModel` in the final SELECT — all models that ran on those prompts appear automatically.
+
+**Example** — "model comparison for Soundbox (MHD) in March 2026":
 ```sql
--- expPrompt IN = prompts where BOTH models appear for Soundbox
-WHERE a.cst_entity IN ('p4bsoundbox','p4bAIBot','p4bedc')
-  AND b.expModel IN ('GPT_OSS_120B_INVOKE_STREAM','TFY_LLAMA_3_3_70B_STREAM')
-  AND b.expPrompt IN (
-    'DEVICE_CONTEXTUAL_PROMPT','SETTLEMENT_CONTEXTUAL_PROMPT',
-    'LENDING_CONTEXTUAL_PROMPT','P4B_PROFILE_CONTEXTUAL_PROMPT',
-    'WEALTH_CONTEXTUAL_PROMPT','DEVICE_CONTEXTUAL_PROMPT_EXPERIMENT_HARWARE_JINJA',
-    'Lending_Contextual_Experiment_Prompt','SETTLEMENT_CONTEXTUAL_COLLECTION_PILLS_PROMPT'
-  )
+-- All MHD prompts that cover p4bsoundbox/p4bAIBot/p4bedc (from §A3.1 prompt table)
+AND mb.expPrompt IN (
+  'DEVICE_CONTEXTUAL_PROMPT',
+  'DEVICE_CONTEXTUAL_PROMPT_EXPERIMENT_HARWARE_JINJA',
+  'Device_Contextual_Prompt_Think_Tag',
+  'LENDING_CONTEXTUAL_PROMPT',
+  'Lending_Contextual_Experiment_Prompt',
+  'LENDING_CONTEXTUAL_LANG_EXP_PROMPT',
+  'SETTLEMENT_CONTEXTUAL_PROMPT',
+  'SETTLEMENT_CONTEXTUAL_EXPERIMENT_PROMPT',
+  'SETTLEMENT_CONTEXTUAL_COLLECTION_PILLS_PROMPT',
+  'P4B_PROFILE_CONTEXTUAL_PROMPT',
+  'P4B_PROFILE_CONTEXTUAL_PROMPT_LANGUAGE_EXPERIMENT',
+  'WEALTH_CONTEXTUAL_PROMPT',
+  'WEALTH_CONTEXTUAL_LANG_EXP_PROMPT'
+)
+-- No expModel filter — GROUP BY expModel in the SELECT shows all models dynamically
 ```
+
+**Exception:** Only add `expModel = '...'` if the user explicitly asks to compare or filter to a specific named model.
 
 ---
 
@@ -324,28 +336,36 @@ Paytm CST/MHD customer support datasets.
 12. Before returning any query — self-check: (a) does `messages_data` include `ticket_id, message_id, role, content, type`? (b) does every CTE reference only columns that exist in the tables it selects from? (c) are there any emojis inside the SQL text or comments? (d) do any SQL string literals contain Unicode typographic characters (en dash `–`, em dash `—`, curly quotes `'` `"` `"`, non-breaking space, ellipsis `…`, math minus `−`)? Replace all with plain ASCII equivalents before returning. (e) **BACKSLASH SCAN — if the query contains any REGEXP_REPLACE**: scan every regex pattern string for `\\[`, `\\]`, `\\{`, `\\}`, `\\(`, `\\)` — if any are found, replace with `\[`, `\]`, `\{`, `\}`, `\(`, `\)`. Trino SQL REGEXP_REPLACE uses Java regex; SQL string literals do NOT need double-escaping of brackets/braces. Double backslash (`\\[`) matches a literal backslash followed by `[`, not a literal `[` — this silently breaks all JSON extraction and makes every status column NULL. Single backslash (`\[`) is always correct. (f) **EXPERIMENT QUERY COLUMN CHECK — if `messages_data` is shared between `model_base` and `grouped_sess`**: verify `messages_data` includes ALL of `ticket_id, message_id, role, content` (needed by grouped_sess) AND `expModel, expPrompt` (needed by model_base). The most common error is defining messages_data with only experiment columns (`ticket_id, role, expModel`) and forgetting `message_id` and `content` — this causes `COLUMN_NOT_FOUND` on `m.message_id` and `m.content` inside grouped_sess. Fix any issue before returning. (g) **`llm_model` COALESCE CHECK — if the query extracts `expModel` from the conversation table**: verify `expModel` is built as `COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model)` — NOT `json_extract_scalar(meta, '$.expModel')` alone. `llm_model` is a direct column on `ticket_session_conversation_snapshot_v3` and is the fallback model for sessions not enrolled in any experiment. Omitting it causes non-experiment sessions to get NULL expModel and silently disappear from all model-level analysis. If you see `json_extract_scalar(meta, '$.expModel') AS expModel` anywhere without the COALESCE wrapper, fix it before returning.
 13. Does the question mention "agent handover attempts", "agent handover success rate", or "how often the handover function succeeded/failed"? → Use the `vertical` CTE (joined from `vertical_analytics_data_snapshot_v3`) — this holds Paytm's function call data (`workflow LIKE '%ACPS_agent_handover%'`). Do NOT use the DevRev table for this. Does the question ask for "agent handover count", "how many sessions were handed over", or "escalation count"? → Use the `devrev` CTE (`fd_ticket_id IS NOT NULL`) — this is the ticket ingested from the DevRev platform by Paytm's support team after a handover completes. The two tables measure different things (§7c).
 14. Does the question filter on a specific L1/L2 issue label (`out_key_problem_desc`, `out_key_sub_issue_desc`)? → NEVER use `=`. Look up the entity's labels in §A2 and find the closest matching stored label. Build the LIKE pattern from the **full label**: lowercase the entire label, replace every ` - ` with `%`, wrap in `%...%`. Example: stored `"Payout Success - Amount not Credited"` → `LIKE '%payout success%amount not credited%'`. This gives exact-match specificity (only one L1 can match) while handling Unicode dashes and casing. Do NOT use just 2-3 words — a short keyword is ambiguous and may match unintended labels. See §0.2c.
-15. Does the question ask for analysis **by model** (`expModel`) or **by prompt** (`expPrompt`)? → This is a mandatory lookup, not a hint. Follow these steps exactly — the same discipline as looking up L1 labels in §A2:
-   (a) Identify the vertical: does the query entity start with `p4b`? → MHD (use §A3.1). Otherwise → CST (use §A3.2).
-   (b) Use the **model→prompts reverse lookup** at the bottom of §A3.1 or §A3.2 to find every `expPrompt` value where that model appears. Copy the exact strings — do not paraphrase or abbreviate.
-   (c) Add BOTH filters to the query: `expModel = '<full-model-name>'` AND `expPrompt IN ('<prompt1>', '<prompt2>', ...)`. Use the full model name from the alias table at the top of §A3, not the shorthand.
-   (d) If the query asks about a specific entity (e.g. Soundbox → `p4bsoundbox, p4bAIBot, p4bedc`), cross-check the §A3.1 prompt table to confirm those entities appear in each prompt in your `IN` list. Exclude any prompt where those entities are not listed.
-   (e) Never filter by `expModel` alone. The same model runs on many different prompts; filtering by model only mixes sessions from unrelated experiments and produces meaningless averages. There is no valid reason to omit the `expPrompt IN (...)` filter from a model-level query.
+15. Does the question ask for analysis **by model** (`expModel`) or **by prompt** (`expPrompt`)? → This is a mandatory lookup, not a hint. Use **expPrompt as the scope filter** — do NOT hard-filter by expModel. Follow these steps exactly — same discipline as L1 label lookup in §A2:
+   (a) Identify the vertical: entity starts with `p4b`? → MHD (use §A3.1). Otherwise → CST (use §A3.2).
+   (b) Look up the **prompt table** (§A3.1 or §A3.2) — collect all `expPrompt` values where the queried entities appear. These are the valid experiment sessions for those entities. Copy the exact strings.
+   (c) Add a **single flat** `expPrompt IN ('prompt1', 'prompt2', ...)` filter in `model_base`. Do NOT add per-model OR blocks or `expModel IN (...)` — models are dynamic. New models get added to existing prompts and must appear automatically.
+   (d) `GROUP BY expModel` in the final SELECT — all models that ran on those prompts appear without any hard filter.
+   (e) **Only** add `AND expModel = '...'` if the user explicitly asks to isolate or compare a specific named model.
 
-   **Example — "GPT120B eval score for Soundbox (MHD) last 7 days":**
-   Step (a): Soundbox entities are `p4b*` → MHD → use §A3.1.
-   Step (b): §A3.1 GPT120B reverse lookup → `DEVICE_CONTEXTUAL_PROMPT`, `DEVICE_CONTEXTUAL_PROMPT_EXPERIMENT_HARWARE_JINJA`, `LENDING_CONTEXTUAL_PROMPT`, `Lending_Contextual_Experiment_Prompt`, `LENDING_CONTEXTUAL_LANG_EXP_PROMPT`, `SETTLEMENT_CONTEXTUAL_PROMPT`, `SETTLEMENT_CONTEXTUAL_EXPERIMENT_PROMPT`, `SETTLEMENT_CONTEXTUAL_COLLECTION_PILLS_PROMPT`, `P4B_PROFILE_CONTEXTUAL_PROMPT`, `P4B_PROFILE_CONTEXTUAL_PROMPT_LANGUAGE_EXPERIMENT`, `WEALTH_CONTEXTUAL_PROMPT`, `WEALTH_CONTEXTUAL_LANG_EXP_PROMPT`.
-   Step (c)+(d): All these prompts include p4bsoundbox → keep all. Add to WHERE:
+   **Example — "model comparison for Soundbox (MHD) last 7 days":**
+   Step (a): Soundbox → `p4b*` → MHD → §A3.1.
+   Step (b): Find all §A3.1 prompts where p4bsoundbox appears → all 13 MHD prompts (check entity column confirms each has p4bsoundbox).
+   Step (c): Single filter in model_base:
    ```sql
-   AND mb.expModel = 'GPT_OSS_120B_INVOKE_STREAM'
-   AND mb.expPrompt IN (
-     'DEVICE_CONTEXTUAL_PROMPT','DEVICE_CONTEXTUAL_PROMPT_EXPERIMENT_HARWARE_JINJA',
-     'LENDING_CONTEXTUAL_PROMPT','Lending_Contextual_Experiment_Prompt',
-     'LENDING_CONTEXTUAL_LANG_EXP_PROMPT','SETTLEMENT_CONTEXTUAL_PROMPT',
-     'SETTLEMENT_CONTEXTUAL_EXPERIMENT_PROMPT','SETTLEMENT_CONTEXTUAL_COLLECTION_PILLS_PROMPT',
-     'P4B_PROFILE_CONTEXTUAL_PROMPT','P4B_PROFILE_CONTEXTUAL_PROMPT_LANGUAGE_EXPERIMENT',
-     'WEALTH_CONTEXTUAL_PROMPT','WEALTH_CONTEXTUAL_LANG_EXP_PROMPT'
+   AND expPrompt IN (
+     'DEVICE_CONTEXTUAL_PROMPT',
+     'DEVICE_CONTEXTUAL_PROMPT_EXPERIMENT_HARWARE_JINJA',
+     'Device_Contextual_Prompt_Think_Tag',
+     'LENDING_CONTEXTUAL_PROMPT',
+     'Lending_Contextual_Experiment_Prompt',
+     'LENDING_CONTEXTUAL_LANG_EXP_PROMPT',
+     'SETTLEMENT_CONTEXTUAL_PROMPT',
+     'SETTLEMENT_CONTEXTUAL_EXPERIMENT_PROMPT',
+     'SETTLEMENT_CONTEXTUAL_COLLECTION_PILLS_PROMPT',
+     'P4B_PROFILE_CONTEXTUAL_PROMPT',
+     'P4B_PROFILE_CONTEXTUAL_PROMPT_LANGUAGE_EXPERIMENT',
+     'WEALTH_CONTEXTUAL_PROMPT',
+     'WEALTH_CONTEXTUAL_LANG_EXP_PROMPT'
    )
+   -- No expModel filter here
    ```
+   Step (d): `GROUP BY expModel` in final SELECT → GPT120B, LLAMA70B, SB_LORA, SB_THINK, SB_SLM, BL_LORA all appear automatically.
 
 **You must NEVER:**
 - Start a query from the eval, devrev, or meta table — always from `session_data` CTE.
@@ -368,7 +388,7 @@ Paytm CST/MHD customer support datasets.
 - Filter a soundbox/device/EDC query with `cst_entity = 'p4bsoundbox'` alone — always use `cst_entity IN ('p4bsoundbox', 'p4bAIBot', 'p4bedc')` to capture agent handover and EDC escalation sessions (§6.2).
 - Omit `role` (or any other standard column) from the `messages_data` CTE — always select `ticket_id, message_id, role, content, type` as the minimum base set. When experiment analysis is needed, also add `COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model) AS expModel` and `json_extract_scalar(meta, '$.expPrompt') AS expPrompt`. Missing `role` breaks `grouped_sess`; missing `llm_model` (via the COALESCE) silently drops all non-experiment sessions from model analysis (§0.11, §15.3).
 - Define `messages_data` with only experiment columns (`ticket_id, role, expModel, expPrompt`) when the same CTE is also used by `grouped_sess` — this causes `COLUMN_NOT_FOUND` on `m.message_id` and `m.content`. When `messages_data` serves both `model_base` AND `grouped_sess`, it must include the full merged column set: `ticket_id, message_id, role, content` (base) + `expModel, expPrompt` (experiment). The experiment columns are added ON TOP of the base set, never replacing them (§15.3).
-- Filter by `expModel` alone without also filtering `expPrompt` — the same model runs on many different prompts; filtering by model only mixes sessions from different experiments, producing meaningless averages. Always look up §A3 to find the matching prompts and add `expPrompt IN (...)` alongside `expModel = '...'`. This is mandatory — not optional — for every model-level query (pre-flight item 15).
+- Scope model-level queries with `expModel IN (...)` or per-model OR blocks — use a single flat `expPrompt IN (all prompts for the queried entities)` instead. expPrompt defines the valid experiment scope; expModel is the dimension to GROUP BY. Hard-filtering by model breaks when new models are added to existing prompts. Only add `expModel = '...'` if the user explicitly asks for a specific model (pre-flight item 15).
 - Use `json_extract_scalar(meta, '$.expModel') AS expModel` without wrapping in `COALESCE(..., llm_model)` — non-experiment sessions store the model in the `llm_model` column directly, not in `meta`. Without the fallback, those sessions get NULL expModel, pass the `WHERE expModel IS NOT NULL` filter as excluded, and disappear from all model-level analysis. Always write `COALESCE(json_extract_scalar(meta, '$.expModel'), llm_model) AS expModel`.
 - Use emojis (🔹, 1️⃣, ✅, ❌, etc.) anywhere inside SQL query text or SQL comments — emojis may appear only in the plain-text report or explanation, never inside a query string.
 - Use Unicode typographic characters inside SQL string literals — en dash `–` (U+2013), em dash `—` (U+2014), curly/smart quotes `'` `"` `"` (U+2018/2019/201C/201D), non-breaking space (U+00A0), ellipsis `…` (U+2026), or math minus `−` (U+2212). These look identical to ASCII in text output but silently return zero rows in Trino string comparisons. Always replace with plain ASCII: `–`/`—` → `-`, smart quotes → straight quotes, non-breaking space → regular space, `…` → `...` (§0.2c).
