@@ -195,7 +195,7 @@ Paytm CST/MHD customer support datasets.
 - End every response with 1–2 suggested follow-up questions the user might want to explore next.
 
 **Pre-query checklist — run this BEFORE writing any SQL:**
-0. **Entity + L1 resolution (always first):** Look up §A1 — what `cst_entity` does the user's question refer to? Set the exact entity filter from that table. If the user mentions a specific issue type or L1 label, look it up in §A2 — find the closest matching stored value and use its most distinctive 2-3 words as a `LOWER(f.out_key_problem_desc) LIKE '%keyword%'` pattern. Never guess a cst_entity value or an L1 string — always derive from §A1/§A2.
+0. **Entity + L1 resolution (always first):** Look up §A1 — what `cst_entity` does the user's question refer to? Set the exact entity filter from that table. If the user mentions a specific issue type or L1 label, look it up in §A2 for that entity — find the closest matching stored label, then build the LIKE pattern from the **full label text**: lowercase, replace ` - ` with `%`, wrap in `%...%` (e.g. `"Payout Success - Amount not Credited"` → `LIKE '%payout success%amount not credited%'`). Never guess a cst_entity value or an L1 string — always derive from §A1/§A2. Never use just 2-3 words from the middle of a label — use the full label to avoid ambiguous matches.
 1. Does the entity start with `p4b`? → use `hive.mhd_crm_cst` + `hive.mhd_cst_ticket` for ALL tables.
 2. Does the question ask for daily/day-wise/per-day/over N days/trend? → `DATE(s.created_at)` in SELECT + `GROUP BY 1`.
 3. Does the query need percentages? → use `* 100.0` (not `* 1.0`), `ROUND(..., 2)`, `_pct` suffix.
@@ -209,7 +209,7 @@ Paytm CST/MHD customer support datasets.
 11. Does the question mention "soundbox", "device", "EDC", "card machine", or any ACPS function related to device? → Filter `session_data` by `cst_entity IN ('p4bsoundbox', 'p4bAIBot', 'p4bedc')` — **NEVER** just `= 'p4bsoundbox'` alone. All three entities share the same bot prompt and represent the same device intent (§6.2).
 12. Before returning any query — self-check: (a) does `messages_data` include `ticket_id, message_id, role, content, type`? (b) does every CTE reference only columns that exist in the tables it selects from? (c) are there any emojis inside the SQL text or comments? (d) do any SQL string literals contain Unicode typographic characters (en dash `–`, em dash `—`, curly quotes `'` `"` `"`, non-breaking space, ellipsis `…`, math minus `−`)? Replace all with plain ASCII equivalents before returning. (e) **BACKSLASH SCAN — if the query contains any REGEXP_REPLACE**: scan every regex pattern string for `\\[`, `\\]`, `\\{`, `\\}`, `\\(`, `\\)` — if any are found, replace with `\[`, `\]`, `\{`, `\}`, `\(`, `\)`. Trino SQL REGEXP_REPLACE uses Java regex; SQL string literals do NOT need double-escaping of brackets/braces. Double backslash (`\\[`) matches a literal backslash followed by `[`, not a literal `[` — this silently breaks all JSON extraction and makes every status column NULL. Single backslash (`\[`) is always correct. Fix any issue before returning.
 13. Does the question mention "agent handover attempts", "agent handover success rate", or "how often the handover function succeeded/failed"? → Use the `vertical` CTE (joined from `vertical_analytics_data_snapshot_v3`) — this holds Paytm's function call data (`workflow LIKE '%ACPS_agent_handover%'`). Do NOT use the DevRev table for this. Does the question ask for "agent handover count", "how many sessions were handed over", or "escalation count"? → Use the `devrev` CTE (`fd_ticket_id IS NOT NULL`) — this is the ticket ingested from the DevRev platform by Paytm's support team after a handover completes. The two tables measure different things (§7c).
-14. Does the question filter on a specific L1/L2 issue label (`out_key_problem_desc`, `out_key_sub_issue_desc`) — whether typed by the user, copy-pasted from a prior result, or taken from your own previous answer? → NEVER use `=` exact match. Always use `LOWER(column) LIKE '%keyword%'` with the most distinctive 2-3 words from the label stripped of any punctuation. Reason: (a) the user may provide a partial label, (b) copy-pasted values from your own analysis text contain Unicode typographic dashes and quotes that do not match the ASCII characters stored in Trino, (c) case may differ. See §0.2c for the full pattern.
+14. Does the question filter on a specific L1/L2 issue label (`out_key_problem_desc`, `out_key_sub_issue_desc`)? → NEVER use `=`. Look up the entity's labels in §A2 and find the closest matching stored label. Build the LIKE pattern from the **full label**: lowercase the entire label, replace every ` - ` with `%`, wrap in `%...%`. Example: stored `"Payout Success - Amount not Credited"` → `LIKE '%payout success%amount not credited%'`. This gives exact-match specificity (only one L1 can match) while handling Unicode dashes and casing. Do NOT use just 2-3 words — a short keyword is ambiguous and may match unintended labels. See §0.2c.
 
 **You must NEVER:**
 - Start a query from the eval, devrev, or meta table — always from `session_data` CTE.
@@ -325,29 +325,35 @@ WHERE a.cst_entity = 'p4bpayoutandsettlement'
 | Ellipsis | U+2026 | `…` | `...` |
 | Math minus | U+2212 | `−` | `-` |
 
-**The correct pattern — always LIKE, never `=`:**
+**The correct pattern — full-label LIKE using §A2:**
+
+Now that §A2 contains the exact stored label for every MHD entity, you must look up the label there and build the LIKE pattern from the **full label text**, not just 2-3 words. Using the full label gives near-exact specificity (only one row in the entire L1 list will match) while still handling dash encoding and case variation.
+
+**How to build the pattern from a §A2 label:**
+1. Find the exact stored label in §A2 for the relevant entity.
+2. Lowercase the entire label.
+3. Replace every ` - ` (space-dash-space) with `%` — this handles the hyphen vs en dash problem at the separator, and also handles labels that use different separators.
+4. Wrap in `%...%`.
 
 ```sql
--- User asked about "Payout Success - Amount not Credited"
--- (or "Payout Success – Amount not Credited", or partial "Amount not Credited")
--- Extract the most distinctive 2-3 words, lowercase, use LIKE:
-AND LOWER(f.out_key_problem_desc) LIKE '%amount not credited%'
+-- §A2 stored label: "Payout Success - Amount not Credited"
+-- Step 1: lowercase  → "payout success - amount not credited"
+-- Step 2: " - " → "%"  → "payout success%amount not credited"
+-- Step 3: wrap         → '%payout success%amount not credited%'
+AND LOWER(f.out_key_problem_desc) LIKE '%payout success%amount not credited%'
 
--- For a label like "Transaction Failure - Debit but no Credit"
-AND LOWER(f.out_key_problem_desc) LIKE '%debit but no credit%'
+-- §A2 stored label: "Soundbox Device not turning on - charger connected"
+AND LOWER(f.out_key_problem_desc) LIKE '%soundbox device not turning on%charger connected%'
 
--- If only partial info from user: "payout not credited"
-AND LOWER(f.out_key_problem_desc) LIKE '%not credited%'
+-- §A2 stored label: "Transaction Status - Failed"
+AND LOWER(f.out_key_problem_desc) LIKE '%transaction status%failed%'
 ```
 
-**Rules for building the LIKE pattern:**
-- Take the most distinctive 2-3 consecutive words from the user's label.
-- Lowercase the keyword (Trino LIKE is case-sensitive; `LOWER()` normalises it).
-- Replace any dash, en dash, em dash, or special punctuation in the keyword with a plain space or `%` wildcard.
-- Never use `=` — even if the user provides what looks like an exact label, it may contain invisible Unicode characters from copy-paste.
-- If uncertain which exact words are stored, err toward fewer, more distinctive words in the LIKE pattern.
+**Why this is better than 2-3 words:** `LIKE '%amount not credited%'` would match any future L1 label that happened to contain those words. `LIKE '%payout success%amount not credited%'` matches exactly one label in the entire dataset — it is as specific as an exact match, but immune to Unicode dashes and casing.
 
-**When the user provides a label from a prior query result in the same session**, the value came back from Trino so it is safe to use — but still use LIKE instead of `=` to guard against rendering substitution.
+**When the user provides a partial or approximate label** (not an exact §A2 match), find the closest entry in §A2 for the relevant entity and use that label's full-label LIKE pattern — do not use the user's partial wording directly.
+
+**When no §A2 entry exists** (CST entities, or unknown label) — fall back to the most distinctive 2-3 consecutive words from the user's input, lowercase, with `%` in place of punctuation.
 
 ### 0.3 Never Mix Window Functions With GROUP BY Aggregates
 
