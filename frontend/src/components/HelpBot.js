@@ -543,8 +543,8 @@ function Message({ msg }) {
       marginBottom: '.9rem',
     }}>
       {!isUser && (
-        <div style={{ fontSize: '.68rem', color: '#94a3b8', marginBottom: '.25rem', paddingLeft: '.2rem' }}>
-          🤖 Help Bot
+        <div style={{ fontSize: '.68rem', color: '#94a3b8', marginBottom: '.25rem', paddingLeft: '.2rem', display: 'flex', alignItems: 'center', gap: '.3rem' }}>
+          🤖 Analytics Bot <span style={{ fontSize: '.6rem', fontWeight: 700, background: '#fef9c3', color: '#854d0e', border: '1px solid #fde68a', borderRadius: 4, padding: '0px 5px' }}>Beta</span>
         </div>
       )}
       <div style={{
@@ -742,7 +742,7 @@ export default function HelpBot() {
       {/* Floating trigger button */}
       <button
         onClick={() => setOpen(true)}
-        title="Open Help Bot"
+        title="Open Analytics Bot"
         style={{
           position: 'fixed', bottom: '1.75rem', right: '1.75rem', zIndex: 1100,
           display: 'flex', alignItems: 'center', gap: '.45rem',
@@ -757,7 +757,7 @@ export default function HelpBot() {
         onMouseEnter={e => e.currentTarget.style.background = '#1d4ed8'}
         onMouseLeave={e => e.currentTarget.style.background = '#2563eb'}
       >
-        <span style={{ fontSize: '1rem' }}>🤖</span> Help Bot
+        <span style={{ fontSize: '1rem' }}>🤖</span> Analytics Bot <span style={{ fontSize: '.62rem', fontWeight: 700, background: '#fef9c3', color: '#854d0e', border: '1px solid #fde68a', borderRadius: 4, padding: '0px 5px', marginLeft: '.2rem' }}>Beta</span>
       </button>
 
       {/* Backdrop + Drawer */}
@@ -791,7 +791,10 @@ export default function HelpBot() {
               <div style={{ display: 'flex', alignItems: 'center', gap: '.65rem' }}>
                 <span style={{ fontSize: '1.1rem' }}>🤖</span>
                 <div>
-                  <div style={{ fontWeight: 700, fontSize: '.95rem', color: '#0f172a' }}>Help Bot</div>
+                  <div style={{ fontWeight: 700, fontSize: '.95rem', color: '#0f172a', display: 'flex', alignItems: 'center', gap: '.4rem' }}>
+                    Analytics Bot
+                    <span style={{ fontSize: '.6rem', fontWeight: 700, background: '#fef9c3', color: '#854d0e', border: '1px solid #fde68a', borderRadius: 4, padding: '0px 5px' }}>Beta</span>
+                  </div>
                   <div style={{ fontSize: '.7rem', color: '#94a3b8' }}>Ask anything — I'll query Trino and show results</div>
                 </div>
               </div>
