@@ -175,7 +175,7 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
     """
     Query Trino and return a dict that maps directly to InsightsResponse fields.
 
-    Funnel (mirrors master_queries.sql pattern — see CST_DATA_GUIDE.md):
+    Funnel (mirrors kb/master_queries.sql pattern — see kb/CST_DATA_GUIDE.md):
       support_ticket_details_snapshot_v3      → base session count (total_sessions)
       feedback_complete_analyzed_snapshot_v3  → L1/L2 tags, eval, tone (LEFT JOIN on ticket_id)
       ticket_meta_snapshot_v3                 → MSAT feedback_status (LEFT JOIN on ticket_id)
@@ -207,7 +207,7 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
     # ── 1. Max date anchor — always from the base session table ───────────────
     # Use DATE(created_at) for business date logic.
     # dl_last_updated is a mandatory Trino partition filter only — never use it
-    # for date grouping or range logic. See CST_DATA_GUIDE.md §4.
+    # for date grouping or range logic. See kb/CST_DATA_GUIDE.md §4.
     cur.execute(f"""
         SELECT MAX(DATE(created_at))
         FROM {session_table}

@@ -32,14 +32,15 @@ MAX_ROWS = 500
 # ── Knowledge base loader ───────────────────────────────────────────────────────
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_KB_DIR = _REPO_ROOT / "kb"
 _KB_FILES = [
-    _REPO_ROOT / "CST_DATA_GUIDE.md",
-    _REPO_ROOT / "master_queries.sql",
+    _KB_DIR / "CST_DATA_GUIDE.md",
+    _KB_DIR / "master_queries.sql",
 ]
 
 
 def _load_kb() -> str:
-    """Load CST_DATA_GUIDE.md and master_queries.sql from disk at call time."""
+    """Load kb/CST_DATA_GUIDE.md and kb/master_queries.sql from disk at call time."""
     parts = []
     for path in _KB_FILES:
         try:

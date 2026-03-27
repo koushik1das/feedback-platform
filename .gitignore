@@ -31,5 +31,5 @@ frontend/node_modules/
 .claude/settings.local.json
 
 # Claude session context — local only, not for version control
-CLAUDE_CONTEXT.md
+kb/CLAUDE_CONTEXT.md
 
