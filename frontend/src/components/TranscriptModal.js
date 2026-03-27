@@ -285,8 +285,23 @@ function ListenButton({ ticketId, createdAt, recordingPath }) {
   const [playing,      setPlaying]      = useState(false);
   const [audioError,   setAudioError]   = useState(false);
   const [downloading,  setDownloading]  = useState(false);
+  const [available,    setAvailable]    = useState(null); // null=checking, true, false
 
-  if (!ticketId || !createdAt || !recordingPath) return null;
+  useEffect(() => {
+    if (!ticketId || !createdAt || !recordingPath) { setAvailable(false); return; }
+    const dateOnly = createdAt.slice(0, 10);
+    const [yyyy, mm, dd] = dateOnly.split('-');
+    const dateFmt  = `${dd}-${mm}-${yyyy}`;
+    const gatewayUrl = recordingPath === 'ivr'
+      ? `https://cst-gateway-int.paytm.com/recording/${dateFmt}/${ticketId}.wav`
+      : `https://cst-gateway-int.paytm.com/recording/obd/${dateFmt}/${ticketId}.wav`;
+    axios.get(`${API_BASE}/campaigns/check-recording?recording_url=${encodeURIComponent(gatewayUrl)}`)
+      .then(res => setAvailable(res.data?.available === true))
+      .catch(() => setAvailable(false));
+  }, [ticketId, createdAt, recordingPath]);
+
+  // Still checking or not available — render nothing
+  if (!available) return null;
 
   const dateOnly = createdAt.slice(0, 10);
   const [yyyy, mm, dd] = dateOnly.split('-');

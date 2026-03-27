@@ -280,6 +280,18 @@ def analyse_campaign(
         raise HTTPException(status_code=500, detail=f"Campaign analysis failed: {str(e)}")
 
 
+@router.get("/campaigns/check-recording", tags=["campaigns"])
+def check_recording(recording_url: str = Query(...)):
+    """Check whether a recording exists in S3. Returns {available: bool}."""
+    try:
+        # Use GET with Range header to fetch only the first byte — avoids downloading full file
+        r = _requests.get(recording_url, headers={"Range": "bytes=0-0"}, timeout=8, stream=True)
+        r.close()
+        return {"available": r.status_code in (200, 206)}
+    except Exception:
+        return {"available": False}
+
+
 @router.get("/campaigns/recording", tags=["campaigns"])
 def stream_recording(recording_url: str = Query(...)):
     """Proxy a call recording WAV from S3 to bypass browser CORS restrictions."""
