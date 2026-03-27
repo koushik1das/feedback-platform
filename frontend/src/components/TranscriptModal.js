@@ -36,8 +36,86 @@ function fmt(iso) {
   catch { return ''; }
 }
 
-function cleanBot(text) {
-  return text.replace(/\n?\{"name":"proactive_issues_displayList"[\s\S]*?\}\s*\]/g, '').trim();
+/**
+ * Split bot message into alternating text and tool-call segments.
+ * Finds all top-level JSON objects {...} embedded in the text.
+ * Returns [{type:'text'|'tool', content:string}]
+ */
+function splitBotContent(text) {
+  if (!text) return [{ type: 'text', content: '' }];
+  const result = [];
+  let i = 0, textStart = 0;
+
+  while (i < text.length) {
+    if (text[i] === '{') {
+      // Walk forward to find matching closing brace
+      let depth = 0, j = i;
+      for (; j < text.length; j++) {
+        if (text[j] === '{') depth++;
+        else if (text[j] === '}') { depth--; if (depth === 0) break; }
+      }
+      if (depth === 0) {
+        const candidate = text.slice(i, j + 1);
+        try {
+          JSON.parse(candidate);
+          // Valid JSON — flush preceding text then push tool segment
+          const preceding = text.slice(textStart, i).trim();
+          if (preceding) result.push({ type: 'text', content: preceding });
+          result.push({ type: 'tool', content: candidate });
+          textStart = j + 1;
+          i = j + 1;
+          continue;
+        } catch { /* not valid JSON, skip */ }
+      }
+    }
+    i++;
+  }
+  const tail = text.slice(textStart).trim();
+  if (tail) result.push({ type: 'text', content: tail });
+  return result.length ? result : [{ type: 'text', content: text }];
+}
+
+function InlineToolCall({ content }) {
+  const [open, setOpen] = useState(false);
+  let parsed = null;
+  let label = 'Tool';
+  try {
+    parsed = JSON.parse(content);
+    label = parsed?.name || parsed?.type || parsed?.function_name || 'Tool';
+  } catch { label = 'Tool'; }
+
+  return (
+    <div style={{ marginTop: '.5rem', border: '1px solid #e0e7ff', borderRadius: 8, overflow: 'hidden' }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          width: '100%', background: '#eef2ff', border: 'none', cursor: 'pointer',
+          display: 'flex', alignItems: 'center', gap: '.4rem',
+          padding: '.3rem .65rem', textAlign: 'left',
+        }}
+      >
+        <span style={{ fontSize: '.67rem', color: '#94a3b8', flexShrink: 0 }}>⚙️</span>
+        <span style={{
+          fontSize: '.67rem', fontWeight: 700, fontFamily: 'monospace',
+          color: '#4338ca', background: '#e0e7ff', borderRadius: 3,
+          padding: '1px 6px', flexShrink: 0,
+        }}>{label}</span>
+        <span style={{ fontSize: '.67rem', color: '#94a3b8', flex: 1 }}>tool call · {open ? 'hide' : 'show'}</span>
+        <span style={{ fontSize: '.68rem', color: '#94a3b8',
+          transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}>▾</span>
+      </button>
+      {open && (
+        <pre style={{
+          margin: 0, padding: '.55rem .75rem',
+          background: '#f5f3ff', fontSize: '.71rem', color: '#3730a3',
+          lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+          borderTop: '1px solid #e0e7ff', maxHeight: 260, overflowY: 'auto',
+        }}>
+          {parsed ? JSON.stringify(parsed, null, 2) : content}
+        </pre>
+      )}
+    </div>
+  );
 }
 
 function isToolMsg(content) {
@@ -985,7 +1063,11 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
                           : <span style={{ whiteSpace:'pre-wrap' }}>{msg.content}</span>
                       ) : (
                         <div className="md-bubble">
-                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleanBot(msg.content)}</ReactMarkdown>
+                          {splitBotContent(msg.content).map((seg, si) =>
+                            seg.type === 'tool'
+                              ? <InlineToolCall key={si} content={seg.content} />
+                              : <ReactMarkdown key={si} remarkPlugins={[remarkGfm]}>{seg.content}</ReactMarkdown>
+                          )}
                         </div>
                       )}
                     </div>
