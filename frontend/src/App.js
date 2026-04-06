@@ -355,7 +355,7 @@ function MidDrawer({ midSessions, onClose, onViewTranscript, rcaMessages, setRca
             background: '#fff', display: 'flex', flexDirection: 'column', overflow: 'hidden',
           }}>
             <div style={{ padding: '.65rem 1rem', borderBottom: '1px solid #f1f5f9', fontSize: '.72rem', fontWeight: 600, color: '#94a3b8', letterSpacing: '.06em', textTransform: 'uppercase', flexShrink: 0 }}>
-              Sessions across channels
+              AI ChatBot sessions
             </div>
             <div style={{ overflowY: 'auto', flex: 1, padding: '1rem 0 1rem 1rem' }}>
               {/* Timeline vertical track */}
@@ -534,6 +534,8 @@ export default function App() {
   const [ivrInsights,              setIvrInsights]              = useState(null);
   const [selectedSoundboxCategory, setSelectedSoundboxCategory] = useState(null);
   const [soundboxInsights,         setSoundboxInsights]         = useState(null);
+  const [socialMediaInsights,      setSocialMediaInsights]      = useState(null);
+  const [evalScoreFilter,          setEvalScoreFilter]          = useState(null);
   const [globalSearch,             setGlobalSearch]             = useState('');
   const [globalTranscriptId,       setGlobalTranscriptId]       = useState(null);
   const [midSessions,              setMidSessions]              = useState(null);  // {mid, sessions[]}
@@ -637,6 +639,8 @@ export default function App() {
     setIvrInsights(null);
     setSelectedSoundboxCategory(null);
     setSoundboxInsights(null);
+    setSocialMediaInsights(null);
+    setEvalScoreFilter(null);
   }, []);
 
   const handleSelectHelpdeskType = useCallback((type) => {
@@ -668,6 +672,7 @@ export default function App() {
     setError(null);
     setInsights(null);
     setRawFeedback([]);
+    setEvalScoreFilter(null);
 
     try {
       if (selectedChannel === 'campaigns') {
@@ -687,6 +692,12 @@ export default function App() {
           `${API_BASE}/soundbox/analyse?category=${encodeURIComponent(selectedSoundboxCategory)}&date_range=${dateRange}`
         );
         setSoundboxInsights(res.data);
+        return;
+      } else if (selectedChannel === 'social_media') {
+        const res = await axios.get(
+          `${API_BASE}/helpdesk/social-media?helpdesk_type=merchant&date_range=${dateRange}`
+        );
+        setSocialMediaInsights(res.data);
         return;
       } else if (selectedChannel === 'helpdesk') {
         // ── Helpdesk → Trino ──────────────────────────────────────────────
@@ -1037,6 +1048,27 @@ export default function App() {
           </>
         )}
 
+        {/* ── Social Media view ── */}
+        {selectedChannel === 'social_media' && !loading && socialMediaInsights && (
+          <>
+            <div className="stats-row">
+              <div className="stat-card">
+                <div className="stat-label"># of Tickets</div>
+                <div className="stat-value stat-primary">{socialMediaInsights.total_feedback.toLocaleString()}</div>
+                <div className="stat-sub">Social Media · Merchant</div>
+                {socialMediaInsights.data_from && (
+                  <div style={{ marginTop: '.4rem', fontSize: '.7rem', color: '#64748b' }}>
+                    📅 {socialMediaInsights.data_from === socialMediaInsights.data_until
+                      ? socialMediaInsights.data_from
+                      : `${socialMediaInsights.data_from} – ${socialMediaInsights.data_until}`}
+                  </div>
+                )}
+              </div>
+            </div>
+            <IssueList issues={socialMediaInsights.top_issues} helpdeskType="merchant" showTranscript={false} />
+          </>
+        )}
+
         {/* ── Results ── */}
         {insights && !loading && selectedChannel !== 'campaigns' && (
           <>
@@ -1071,8 +1103,39 @@ export default function App() {
             </div>
 
 
+            {/* Eval score filter */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '.5rem', margin: '.75rem 0 .25rem', flexWrap: 'wrap' }}>
+              <span style={{ fontSize: '.75rem', fontWeight: 600, color: '#64748b', letterSpacing: '.04em', textTransform: 'uppercase' }}>
+                Eval Score
+              </span>
+              {[
+                { key: null,    label: 'All' },
+                { key: 'lt30',  label: '< 30' },
+                { key: '30-70', label: '30 – 70' },
+                { key: 'gt70',  label: '> 70' },
+              ].map(({ key, label }) => {
+                const active = evalScoreFilter === key;
+                const chipColor = key === 'lt30' ? '#dc2626' : key === '30-70' ? '#ca8a04' : key === 'gt70' ? '#059669' : '#2563eb';
+                return (
+                  <button
+                    key={String(key)}
+                    onClick={() => setEvalScoreFilter(key)}
+                    style={{
+                      padding: '3px 14px', borderRadius: 20, fontSize: '.75rem', fontWeight: 600,
+                      cursor: 'pointer', transition: 'all .15s',
+                      background: active ? chipColor : '#f1f5f9',
+                      color: active ? '#fff' : '#475569',
+                      border: `1.5px solid ${active ? chipColor : '#e2e8f0'}`,
+                    }}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
+            </div>
+
             {/* Issue list */}
-            <IssueList issues={insights.top_issues} helpdeskType={helpdeskType} />
+            <IssueList issues={insights.top_issues} helpdeskType={helpdeskType} evalScoreFilter={evalScoreFilter} />
 
             {/* Raw feed table */}
             {rawFeedback.length > 0 && <FeedbackTable items={rawFeedback} />}
@@ -1104,7 +1167,15 @@ export default function App() {
           </div>
         )}
 
-        {!insights && !campaignDetail && !ivrInsights && !soundboxInsights && !loading && !error && selectedChannel !== 'campaigns' && selectedChannel !== 'ivr' && selectedChannel !== 'soundbox' && (
+        {selectedChannel === 'social_media' && !loading && !socialMediaInsights && !error && (
+          <div className="empty-state">
+            <div className="empty-state-icon">📲</div>
+            <h3>Click Analyse to load social media insights</h3>
+            <p>View top issues and customer voice from Twitter & Facebook merchant tickets.</p>
+          </div>
+        )}
+
+        {!insights && !campaignDetail && !ivrInsights && !soundboxInsights && !socialMediaInsights && !loading && !error && selectedChannel !== 'campaigns' && selectedChannel !== 'ivr' && selectedChannel !== 'soundbox' && selectedChannel !== 'social_media' && (
           <div className="empty-state">
             <div className="empty-state-icon">📡</div>
             <h3>Select a channel above and click Analyse</h3>

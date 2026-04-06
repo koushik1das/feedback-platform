@@ -10,11 +10,11 @@ import React from 'react';
 
 const CHANNELS = [
   { id: 'app_store',    name: 'App Store',          icon: '⭐', description: 'Google Play reviews & ratings',            color: '#f0fdf4' },
-  { id: 'helpdesk',     name: 'Help Desk',           icon: '🎧', description: 'Customer & merchant support interactions', color: '#fefce8' },
+  { id: 'helpdesk',     name: 'AI ChatBot',           icon: '🤖', description: 'ChatBot sessions — merchant & customer',   color: '#fefce8' },
   { id: 'campaigns',    name: 'Outbound Campaign',   icon: '📞', description: 'AI voice bot call analytics',             color: '#dbeafe' },
   { id: 'ivr',          name: 'AI IVR',              icon: '📱', description: 'MHD Call Center inbound analytics',       color: '#f0fdf4' },
   { id: 'soundbox',     name: 'AI Soundbox',         icon: '🔊', description: 'AI bot calls for Soundbox & EDC devices', color: '#fef3c7' },
-  { id: 'social_media', name: 'Social Media',        icon: '📲', description: 'Social media sentiment & mentions',       color: '#f8fafc', disabled: true },
+  { id: 'social_media', name: 'Social Media',        icon: '📲', description: 'Social media sentiment & mentions',       color: '#f8fafc' },
 ];
 
 const APP_STORE_APPS = [
@@ -179,10 +179,11 @@ export default function ChannelSelector({
   const selectedCategoryDef = CUSTOMER_CATEGORIES.find(c => c.id === helpdeskCategory);
 
   const canAnalyse =
-    (selectedChannel === 'campaigns' && selectedCampaign !== null) ||
-    (selectedChannel === 'ivr'       && selectedIvrCategory !== null) ||
-    (selectedChannel === 'soundbox'  && selectedSoundboxCategory !== null) ||
-    (selectedChannel === 'app_store' && appStoreApp !== null) ||
+    (selectedChannel === 'campaigns'    && selectedCampaign !== null) ||
+    (selectedChannel === 'ivr'          && selectedIvrCategory !== null) ||
+    (selectedChannel === 'soundbox'     && selectedSoundboxCategory !== null) ||
+    (selectedChannel === 'social_media') ||
+    (selectedChannel === 'app_store'    && appStoreApp !== null) ||
     (selectedChannel === 'helpdesk' &&
       helpdeskType === 'merchant' && helpdeskProduct !== null) ||
     (selectedChannel === 'helpdesk' &&

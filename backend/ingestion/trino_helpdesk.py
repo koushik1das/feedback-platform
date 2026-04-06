@@ -7,10 +7,27 @@ and returns structured insights compatible with InsightsResponse.
 
 import os
 import json as _json
+import re as _re
 from pathlib import Path
 from datetime import datetime, timedelta
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
+
+
+def _decode_unicode_escapes(s: str) -> str:
+    """
+    Decode literal \\uXXXX escape sequences stored in the DB
+    (produced by Python's json.dumps with ensure_ascii=True).
+    Handles surrogate pairs for emoji (e.g. \\uD83D\\uDD0A → 🔊).
+    """
+    if not s or '\\u' not in s:
+        return s
+    try:
+        # Wrap in JSON string quotes — only escape embedded double-quotes.
+        # The \uXXXX sequences are kept as-is so JSON parsing decodes them.
+        return _json.loads('"' + s.replace('"', '\\"') + '"')
+    except Exception:
+        return s
 
 from dotenv import load_dotenv
 from trino.dbapi import connect
@@ -328,7 +345,7 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
     # DATE(s.created_at) is the correct session date column (not dl_last_updated)
     cur.execute(f"""
         SELECT fa.out_key_problem_desc, fa.out_key_problem_sub_desc,
-               fa.ticket_id, fa.out_merchant_tone, DATE(s.created_at)
+               fa.ticket_id, fa.out_merchant_tone, DATE(s.created_at), fa.eval_score
         FROM {session_table} s
         JOIN {feedback_table} fa
           ON fa.ticket_id = s.id
@@ -340,7 +357,7 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
           AND fa.out_key_problem_desc NOT IN ('Others', 'NA', 'None', '')
           AND fa.out_key_problem_sub_desc IS NOT NULL
           AND fa.out_key_problem_sub_desc NOT IN ('Others', 'NA', 'None', '')
-        LIMIT 2000
+        LIMIT 5000
     """)
     comment_rows = cur.fetchall()
 
@@ -374,12 +391,16 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
     # Build per-(L1, L2) sample bank
     samples_by_l2:  Dict[tuple, List[tuple]] = defaultdict(list)
     comments_by_l1: Dict[str, List[tuple]]   = defaultdict(list)
-    for l1, l2_text, ticket_id, tone, row_date in comment_rows:
+    for l1, l2_text, ticket_id, tone, row_date, eval_score_raw in comment_rows:
         date_str = str(row_date) if row_date else None
+        try:
+            eval_val = round(float(eval_score_raw), 1) if eval_score_raw is not None else None
+        except (TypeError, ValueError):
+            eval_val = None
         if len(samples_by_l2[(l1, l2_text)]) < 20:
             samples_by_l2[(l1, l2_text)].append((ticket_id, tone, date_str))
-        if l1 and l2_text and len(comments_by_l1[l1]) < 10:
-            comments_by_l1[l1].append((l2_text, ticket_id, tone, _detect_lang(l2_text), date_str))
+        if l1 and l2_text and len(comments_by_l1[l1]) < 50:
+            comments_by_l1[l1].append((l2_text, ticket_id, tone, _detect_lang(l2_text), date_str, eval_val))
 
     # Build L2 sub_categories per L1
     # L2 percentage is relative to its parent L1 count (not total_analysed)
@@ -416,12 +437,13 @@ def fetch_helpdesk_insights(product: str, helpdesk_type: str = "merchant",
             "percentage":         round(l1_total / total_analysed * 100, 1) if total_analysed else 0.0,
             "avg_sentiment":      round(avg_score, 2),
             "sentiment_label":    _score_to_label(avg_score),
-            "example_comments":   [c[0] for c in issue_comments],
-            "comment_ticket_ids": [c[1] for c in issue_comments],
-            "comment_tones":      [c[2] for c in issue_comments],
-            "comment_langs":      [c[3] for c in issue_comments],
-            "comment_dates":      [c[4] for c in issue_comments],
-            "comment_ratings":    [None  for c in issue_comments],
+            "example_comments":    [c[0] for c in issue_comments],
+            "comment_ticket_ids":  [c[1] for c in issue_comments],
+            "comment_tones":       [c[2] for c in issue_comments],
+            "comment_langs":       [c[3] for c in issue_comments],
+            "comment_dates":       [c[4] for c in issue_comments],
+            "comment_ratings":     [None  for c in issue_comments],
+            "comment_eval_scores": [c[5] for c in issue_comments],
             "channels":           {"helpdesk": l1_total},
             "sub_categories":     sub_cats_by_l1.get(l1, []),
         })
@@ -543,17 +565,30 @@ def fetch_transcript(ticket_id: str, helpdesk_type: str = "merchant") -> List[Di
         if not text.strip():
             continue
 
-        # Parse meta → hidden flag + CTA options
+        # Decode any literal \uXXXX escape sequences stored by ensure_ascii=True
+        text = _decode_unicode_escapes(text)
+
+        # Parse meta → hidden flag, CTA options, entity
         hidden = False
         cta_options: List[str] = []
+        entity: Optional[str] = None
         try:
             meta = _json.loads(meta_str or "{}")
             hidden = bool(meta.get("hideMessage", False))
             cta_options = [
-                c.get("ctaLabel", "")
+                _decode_unicode_escapes(c.get("ctaLabel", ""))
                 for c in meta.get("ctaList", [])
                 if c.get("ctaLabel")
             ]
+            # Extract CstEntity from expTag, e.g.
+            # "Payments and Settlements_p4bpayoutandsettlement_CHAT_CONTEXTUAL_P4B"
+            # → "p4bpayoutandsettlement"
+            exp_tag = meta.get("expTag", "") or ""
+            parts = exp_tag.split("_")
+            if len(parts) >= 2:
+                # entity is the segment just before "_CHAT" or the second-to-last segment
+                chat_idx = next((i for i, p in enumerate(parts) if p == "CHAT"), None)
+                entity = parts[chat_idx - 1] if chat_idx and chat_idx > 0 else parts[-3] if len(parts) >= 3 else None
         except Exception:
             pass
 
@@ -566,7 +601,24 @@ def fetch_transcript(ticket_id: str, helpdesk_type: str = "merchant") -> List[Di
             "cta_options": cta_options,
             "lang":        lang_code or None,
             "created_at":  created_at.isoformat() if hasattr(created_at, "isoformat") else str(created_at),
+            "entity":      entity,
         })
+
+    # Propagate entity to tool call messages (function_call type) which have no expTag in meta.
+    # Forward-fill from the last seen entity, then back-fill any remaining Nones from the next seen entity.
+    last_entity: Optional[str] = None
+    for msg in messages:
+        if msg["entity"] is not None:
+            last_entity = msg["entity"]
+        elif last_entity is not None:
+            msg["entity"] = last_entity
+    # Back-fill messages before the first entity-tagged message
+    last_entity = None
+    for msg in reversed(messages):
+        if msg["entity"] is not None:
+            last_entity = msg["entity"]
+        elif last_entity is not None:
+            msg["entity"] = last_entity
 
     return messages
 
@@ -608,6 +660,13 @@ def fetch_function_calls(ticket_id: str, helpdesk_type: str = "merchant") -> Lis
             data = parsed
         except Exception:
             pass
+
+        # Decode \uXXXX escapes in string values within parsed data
+        if isinstance(data, str):
+            data = _decode_unicode_escapes(data)
+        elif isinstance(data, dict):
+            data = {k: _decode_unicode_escapes(v) if isinstance(v, str) else v
+                    for k, v in data.items()}
 
         calls.append({
             "message_id": message_id,
@@ -948,6 +1007,8 @@ def fetch_sessions_by_mid(mid: str, limit: int = 50) -> List[Dict[str, Any]]:
                     AND f.dl_last_updated >= DATE '2025-01-01'
                 WHERE s.merchant_id = '{mid}'
                   AND s.dl_last_updated >= DATE '2025-01-01'
+                  AND s.source = 100
+                  AND s.id NOT LIKE '2-%'
                 ORDER BY s.created_at DESC
                 LIMIT {limit}
             """)
@@ -968,3 +1029,113 @@ def fetch_sessions_by_mid(mid: str, limit: int = 50) -> List[Dict[str, Any]]:
             continue
 
     return results
+
+
+# ── Social Media Insights ─────────────────────────────────────────────────────
+
+def fetch_social_media_insights(helpdesk_type: str = "merchant",
+                                date_range: str = "last_7_days") -> Dict[str, Any]:
+    """
+    Fetch social media ticket insights (role_type=3) for the given helpdesk type.
+    Aggregates by issue_category_l1 and returns VoC from ticket_raw_data.
+    """
+    from datetime import datetime as _dt
+
+    schema = DB_SCHEMA.get(helpdesk_type, "mhd_crm_cst")
+    ticket_table = f"hive.{schema}.support_ticket_details_snapshot_v3"
+    raw_table    = f"hive.{schema}.ticket_raw_data_snapshot_v3"
+    partition_start = "2025-01-01"
+
+    conn = _connect()
+    cur  = conn.cursor()
+
+    # Resolve date range from max created_at in table
+    cur.execute(f"""
+        SELECT MAX(DATE(created_at))
+        FROM {ticket_table}
+        WHERE dl_last_updated >= DATE '{partition_start}'
+        AND role_type = 3
+    """)
+    row = cur.fetchone()
+    max_date = row[0] if row and row[0] else date.today() - timedelta(days=1)
+
+    since, until = _resolve_date_range(max_date, date_range)
+
+    cur.execute(f"""
+        SELECT
+            s.id          AS ticket_id,
+            s.issue_category_l1 AS l1,
+            s.issue_category_l2 AS l2,
+            s.created_at,
+            r.data
+        FROM {ticket_table} s
+        LEFT JOIN (
+            SELECT ticket_id, data,
+                   ROW_NUMBER() OVER (PARTITION BY ticket_id ORDER BY updated_at) AS rn
+            FROM {raw_table}
+            WHERE dl_last_updated >= DATE '{partition_start}'
+        ) r ON s.id = r.ticket_id AND r.rn = 1
+        WHERE s.dl_last_updated >= DATE '{partition_start}'
+        AND DATE(s.created_at) >= DATE '{since}'
+        AND DATE(s.created_at) <= DATE '{until}'
+        AND s.role_type = 3
+        AND s.issue_category_l1 IS NOT NULL
+        AND s.issue_category_l1 NOT IN ('Spam Case')
+        ORDER BY s.created_at DESC
+    """)
+    rows = cur.fetchall()
+
+    if not rows:
+        return {
+            "total_feedback": 0,
+            "channels_analysed": [f"Social Media · {helpdesk_type.title()}"],
+            "top_issues": [],
+            "sentiment_distribution": {"positive": 0, "neutral": 0, "negative": 0, "total": 0},
+            "trending_issues": [],
+            "ai_summary": "No social media tickets found for the selected period.",
+            "generated_at": _dt.utcnow().isoformat(),
+            "data_from": since,
+            "data_until": until,
+        }
+
+    total = len(rows)
+
+    # Aggregate by l1
+    from collections import defaultdict
+    groups: Dict[str, list] = defaultdict(list)
+    for ticket_id, l1, l2, created_at, data in rows:
+        groups[l1].append({
+            "ticket_id":  ticket_id,
+            "l2":         l2,
+            "created_at": created_at.isoformat() if created_at else None,
+            "data":       (data or "").strip(),
+        })
+
+    top_issues = []
+    for l1, items in sorted(groups.items(), key=lambda x: -len(x[1])):
+        count = len(items)
+        top_issues.append({
+            "label":              l1,
+            "count":              count,
+            "percentage":         round(count / total * 100, 1),
+            "avg_sentiment":      -0.6,
+            "sentiment_label":    "negative",
+            "example_comments":   [it["data"] for it in items if it["data"]][:10],
+            "comment_ticket_ids": [it["ticket_id"] for it in items][:10],
+            "comment_dates":      [it["created_at"] for it in items][:10],
+            "comment_tones":      None,
+            "comment_langs":      None,
+            "channels":           {"social_media": count},
+        })
+
+    return {
+        "total_feedback":        total,
+        "channels_analysed":     [f"Social Media · {helpdesk_type.title()}"],
+        "top_issues":            top_issues,
+        "sentiment_distribution": {"positive": 0, "neutral": 0, "negative": total, "total": total},
+        "trending_issues":       [t["label"] for t in top_issues[:3]],
+        "ai_summary":            f"{total} social media tickets from {since} to {until}.",
+        "generated_at":          _dt.utcnow().isoformat(),
+        "data_from":             since,
+        "data_until":            until,
+    }

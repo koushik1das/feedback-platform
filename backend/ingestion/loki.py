@@ -368,8 +368,8 @@ def _session_date_from_trino(session_id: str, helpdesk_type: Optional[str] = Non
                     raw = row[0]
                     # support_ticket_details_snapshot_v3 stores created_at in IST already
                     ist_dt = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw)[:19])
-                    start = ist_dt - timedelta(hours=2)
-                    end   = ist_dt + timedelta(hours=2)
+                    start = ist_dt - timedelta(minutes=1)
+                    end   = ist_dt + timedelta(minutes=1)
                     print(f"DEBUG _session_date_from_trino: session={session_id} ist={ist_dt} window={start} to {end}")
                     return (
                         f"{start.strftime('%Y-%m-%d')}T{start.strftime('%H:%M:%S')}",
@@ -597,3 +597,354 @@ def fetch_session_timeline(
 
             raise ValueError("No traceId found for provided sessionId in Plug logs.") from None
         raise
+
+
+# ── Message prompt fetch ──────────────────────────────────────────────────────
+
+def fetch_message_prompt(
+    session_id:     str,
+    created_at_utc: str,          # ISO string from DB, e.g. "2026-03-28T18:49:31"
+    helpdesk_type:  str = "merchant",
+    entity:         Optional[str] = None,  # CstEntity from meta.expTag, e.g. "p4bpayoutandsettlement"
+    message_type:   str = "message",       # "function_call" or "message"
+) -> Dict[str, Any]:
+    """
+    Fetch the raw LLM prompt that generated a specific bot message or tool call.
+
+    Strategy:
+      1. Convert created_at_utc → IST, build a tight window
+         - bot response:   −5s to +1s  (LLM logs just before message stored)
+         - function_call:  −6s to −1s  (LLM that generated the tool call MUST complete
+                                         before the function_call row is written; a concurrent
+                                         LLM call for a new user message may log at T+0,
+                                         so we exclude the last second to avoid that noise)
+      2. Call SearchAILogs with session_id to get AI-service log lines
+      3. Find "Final prompt" log lines; filter by CstEntity if provided
+      4. Pick the line whose timestamp is closest to created_at_utc
+      5. Extract the Prompt: field (everything after "Prompt: ")
+
+    Returns dict with keys: prompt, model, prompt_name, trace_id, span_id, log_time
+    """
+    # 1. Build IST window.
+    # Trino returns created_at in UTC. Convert to IST for SearchAILogs (which uses IST date/time).
+    try:
+        utc_dt = datetime.fromisoformat(created_at_utc.replace("Z", ""))
+    except Exception:
+        utc_dt = datetime.utcnow()
+
+    ist_dt = utc_dt + timedelta(hours=5, minutes=30)
+    if message_type == "function_call":
+        # The LLM that generates a function_call completes ≥1s before the row is stored.
+        # A concurrent LLM call (e.g. processing a new user message arriving at the same second)
+        # would log at T+0 — we use T as the end (exclusive on most Loki implementations)
+        # so that the concurrent call at T is excluded while T-1s is included.
+        start_dt = ist_dt - timedelta(seconds=6)
+        end_dt   = ist_dt   # exclusive end excludes the concurrent call at this exact second
+    else:
+        start_dt = ist_dt - timedelta(seconds=5)
+        end_dt   = ist_dt + timedelta(seconds=1)
+
+    date_part = ist_dt.strftime("%Y-%m-%d")
+    start_hms = start_dt.strftime("%H:%M:%S")
+    end_hms   = end_dt.strftime("%H:%M:%S")
+
+    # If window crosses midnight, clamp start to 00:00:00 on end_dt's date
+    if start_dt.date() != end_dt.date():
+        date_part = end_dt.strftime("%Y-%m-%d")
+        start_hms = "00:00:00"
+
+    print(f"DEBUG fetch_message_prompt: session={session_id} created_at_utc={created_at_utc!r} ist_dt={ist_dt} window={date_part} {start_hms}-{end_hms} entity={entity!r}")
+
+    # 2. Call SearchAILogs
+    result = _mcp_call(
+        "SearchAILogs",
+        {
+            "term":       session_id,
+            "date":       date_part,
+            "start_time": start_hms,
+            "end_time":   end_hms,
+            "limit":      200,
+        },
+        helpdesk_type=helpdesk_type,
+    )
+
+    lines = _extract_log_lines(result)
+
+    # 3. Find "Final prompt" lines, scoped to session + entity where possible
+    def _is_prompt_line(l: str) -> bool:
+        return "getChatStream" in l and "Final prompt" in l
+
+    def _matches_entity(l: str) -> bool:
+        if not entity:
+            return True
+        return f"CstEntity: {entity}" in l or f"CstEntity:{entity}" in l
+
+    # Strict: session + entity
+    prompt_lines = [
+        l for l in lines
+        if _is_prompt_line(l) and f"session:{session_id}" in l and _matches_entity(l)
+    ]
+    # Relax entity filter if no match
+    if not prompt_lines:
+        prompt_lines = [
+            l for l in lines
+            if _is_prompt_line(l) and f"session:{session_id}" in l
+        ]
+    # Relax session filter if still no match
+    if not prompt_lines:
+        prompt_lines = [l for l in lines if _is_prompt_line(l) and _matches_entity(l)]
+    if not prompt_lines:
+        prompt_lines = [l for l in lines if _is_prompt_line(l)]
+
+    print(f"DEBUG fetch_message_prompt: total lines={len(lines)}, prompt_lines={len(prompt_lines)}")
+    for pl in prompt_lines:
+        pname = re.search(r'PromptName:\s*([^,\s]+)', pl)
+        cent  = re.search(r'CstEntity:\s*([^,\s]+)', pl)
+        pts   = _TS_RE.search(pl)
+        print(f"  prompt_line ts={pts.group(1) if pts else 'NONE'} PromptName={pname.group(1) if pname else '?'} CstEntity={cent.group(1) if cent else '?'}")
+
+    if not prompt_lines:
+        raise ValueError(
+            "No 'Final prompt' log line found in the SearchAILogs window. "
+            "The prompt may be outside the search window or the session uses a different log format."
+        )
+
+    # 4. Pick the line whose log timestamp is closest to created_at_utc.
+    #    Log timestamps are UTC; created_at_utc is also UTC — compare directly.
+    def _parse_log_ts(line: str) -> Optional[datetime]:
+        m = _TS_RE.search(line)
+        if m:
+            ts = m.group(1).rstrip("Z")
+            for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
+                        "%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+                try:
+                    return datetime.strptime(ts, fmt)
+                except ValueError:
+                    continue
+        return None
+
+    def _ts_delta(line: str) -> float:
+        log_dt = _parse_log_ts(line)
+        if log_dt is None:
+            return float("inf")
+        return abs((log_dt - utc_dt).total_seconds())
+
+    for pl in prompt_lines:
+        print(f"  ts_delta={_ts_delta(pl):.1f}s for log_dt={_parse_log_ts(pl)} vs utc_dt={utc_dt}")
+    log_line = min(prompt_lines, key=_ts_delta)
+
+    # 4. Extract metadata and Prompt field
+    # Log format: "... trace:X span:Y ... - [TruFoundryChatCompletion] Final prompt - Model: M, PromptName: P, CstEntity: E, Prompt: <raw>"
+    def _extract_kv(pattern: str, text: str) -> Optional[str]:
+        m = re.search(pattern, text)
+        return m.group(1).strip() if m else None
+
+    trace_id    = _extract_kv(r'\btrace:(\S+)',      log_line)
+    span_id     = _extract_kv(r'\bspan:(\S+)',       log_line)
+    model_raw   = _extract_kv(r'Model:\s*([^,]+)',   log_line)
+    prompt_name = _extract_kv(r'PromptName:\s*([^,]+)', log_line)
+
+    # Extract log timestamp (first token)
+    log_time: Optional[str] = None
+    ts_m = _TS_RE.search(log_line)
+    if ts_m:
+        log_time = ts_m.group(1)
+
+    # Extract Prompt: field — everything after "Prompt: "
+    prompt_idx = log_line.find("Prompt: ")
+    if prompt_idx == -1:
+        raise ValueError("Log line found but 'Prompt: ' marker not present.")
+
+    raw_prompt = log_line[prompt_idx + len("Prompt: "):]
+
+    return {
+        "prompt":      raw_prompt,
+        "model":       model_raw,
+        "prompt_name": prompt_name,
+        "trace_id":    trace_id,
+        "span_id":     span_id,
+        "log_time":    log_time,
+        "lines_found": len(prompt_lines),
+    }
+
+
+def fetch_session_all_prompts(
+    session_id:    str,
+    date:          str,           # IST date, e.g. "2026-03-29"
+    helpdesk_type: str = "merchant",
+) -> List[Dict[str, Any]]:
+    """
+    Return all 'Final prompt' log lines for a session on a given IST date.
+    Used for diagnostics / prompt timeline inspection.
+    """
+    result = _mcp_call(
+        "SearchAILogs",
+        {"term": session_id, "date": date, "start_time": "00:00:00", "end_time": "23:59:59", "limit": 500},
+        helpdesk_type=helpdesk_type,
+    )
+    lines = _extract_log_lines(result)
+    out = []
+    for l in lines:
+        if "getChatStream" not in l or "Final prompt" not in l:
+            continue
+        ts_m    = _TS_RE.search(l)
+        pname   = re.search(r'PromptName:\s*([^,\s]+)', l)
+        cent    = re.search(r'CstEntity:\s*([^,\s]+)', l)
+        model_m = re.search(r'Model:\s*([^,\s]+)', l)
+        out.append({
+            "log_time":    ts_m.group(1)   if ts_m    else None,
+            "prompt_name": pname.group(1)  if pname   else None,
+            "cst_entity":  cent.group(1)   if cent    else None,
+            "model":       model_m.group(1) if model_m else None,
+        })
+    return out
+
+
+# ── Plug tool-response fetch ──────────────────────────────────────────────────
+
+def fetch_plug_tool_response(
+    session_id:     str,
+    tool_name:      str,            # e.g. "get_settlement_and_payment_information"
+    created_at_utc: str,            # ISO string from DB, e.g. "2026-03-28T18:34:04"
+    helpdesk_type:  str = "merchant",
+    window_minutes: int = 15,
+) -> Dict[str, Any]:
+    """
+    Fetch the raw Plug API response for a specific tool call from Loki.
+
+    Strategy:
+      1. Convert created_at_utc → IST, build ±window_minutes time window
+      2. Search AnalyzePlugWorkflow by session_id directly (avoids AggregateFailureDebug
+         returning the wrong traceId when multiple tool calls share a session)
+      3. Filter lines that mention the specific tool name
+      4. Extract the traceId from the matching line
+    """
+    # 1. Build IST window
+    try:
+        utc_dt = datetime.fromisoformat(created_at_utc.replace("Z", ""))
+    except Exception:
+        utc_dt = datetime.utcnow()
+
+    ist_dt   = utc_dt + timedelta(hours=5, minutes=30)
+    start_dt = ist_dt - timedelta(minutes=2)
+    end_dt   = ist_dt + timedelta(minutes=window_minutes)
+
+    date_part = ist_dt.strftime("%Y-%m-%d")
+    start_hms = start_dt.strftime("%H:%M:%S")
+    end_hms   = end_dt.strftime("%H:%M:%S")
+
+    if start_dt.date() != end_dt.date():
+        date_part = end_dt.strftime("%Y-%m-%d")
+        start_hms = "00:00:00"
+
+    print(f"DEBUG fetch_plug_tool_response: session={session_id} tool={tool_name} window={date_part} {start_hms}-{end_hms}")
+
+    # 2. Fetch all Plug log lines by session_id directly
+    log_result = _mcp_call(
+        "AnalyzePlugWorkflow",
+        {"term": session_id, "date": date_part, "start_time": start_hms, "end_time": end_hms, "limit": 500},
+        helpdesk_type=helpdesk_type,
+    )
+    log_data = _unwrap_mcp_content(log_result)
+    if isinstance(log_data, str):
+        try:
+            log_data = json.loads(log_data)
+        except Exception:
+            pass
+
+    raw_lines: List[str] = []
+    if isinstance(log_data, dict):
+        rll = log_data.get("raw_log_lines")
+        if isinstance(rll, list) and rll:
+            for item in rll:
+                if isinstance(item, dict):
+                    raw_lines.append(item.get("log") or json.dumps(item))
+                elif isinstance(item, str):
+                    raw_lines.append(item)
+        elif log_data.get("narrative"):
+            for line in log_data["narrative"].splitlines():
+                line = re.sub(r'^\[\d+\]\s*', '', line).strip()
+                if line:
+                    raw_lines.append(line)
+    elif isinstance(log_data, list):
+        raw_lines = _extract_log_lines(log_data)
+
+    if not raw_lines:
+        raise ValueError("No Plug log lines returned for this session.")
+
+    # 3. Match only on the log PREFIX (before the JSON payload `{`), not inside the JSON body.
+    #    The workflow name appears in ApiTransformerServiceImpl lines as:
+    #    "...Modified workflow response for workflow ACPS_get_deductions_information: {...}"
+    #    Request Headers/Body lines share the same traceId+timestamp as the ServiceImpl line.
+
+    workflow_tag = f"acps_{tool_name}".lower()  # e.g. "acps_get_deductions_information"
+
+    def _prefix_has_workflow(line: str) -> bool:
+        brace_idx = line.find('{')
+        prefix = line[:brace_idx].lower() if brace_idx > 0 else line.lower()
+        return workflow_tag.replace("_", "") in prefix.replace("_", "")
+
+    def _line_key(line: str):
+        """(traceId, HH:MM:SS) uniquely identifies a Plug request."""
+        trace_m = re.search(r'\[traceId=([^\]]+)\]', line)
+        ts_m    = re.match(r'^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2})', line)
+        if trace_m and ts_m:
+            return (trace_m.group(1), ts_m.group(1))
+        return None
+
+    # Step A: find ServiceImpl lines whose PREFIX names the exact workflow,
+    #         filtered to within ±2 seconds of the actual tool call timestamp.
+    #         Both DB created_at and Loki log timestamps are UTC, so we compare directly.
+    def _log_ts(line: str):
+        """Parse the UTC datetime from a Loki log line prefix."""
+        m = re.match(r'^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', line)
+        if m:
+            try:
+                return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+        return None
+
+    anchor_keys: set = set()
+    trace_id = None
+    for line in raw_lines:
+        if not _prefix_has_workflow(line):
+            continue
+        log_dt = _log_ts(line)
+        # Accept if within ±2 seconds of the tool call, or if we have no timestamp
+        if log_dt is not None and abs((log_dt - utc_dt).total_seconds()) > 2:
+            continue
+        key = _line_key(line)
+        if key:
+            anchor_keys.add(key)
+            if trace_id is None:
+                trace_id = key[0]
+
+    # Step B: include all lines (Request Headers, Request Body, etc.) that share
+    #         the same traceId+timestamp as an anchor line
+    if anchor_keys:
+        matching = [l for l in raw_lines if _line_key(l) in anchor_keys]
+    else:
+        # No exact workflow match — fall back to loose tool-name search in prefix only
+        tool_norm = tool_name.lower().replace("_", "")
+        matching = []
+        for line in raw_lines:
+            brace_idx = line.find('{')
+            prefix = line[:brace_idx].lower() if brace_idx > 0 else line.lower()
+            if tool_norm in prefix.replace("_", ""):
+                matching.append(line)
+
+    # Fallback traceId from any raw line
+    if not trace_id:
+        for line in raw_lines:
+            m = re.search(r'\[traceId=([^\]]+)\]', line)
+            if m:
+                trace_id = m.group(1)
+                break
+
+    return {
+        "trace_id":    trace_id or "unknown",
+        "tool_name":   tool_name,
+        "log_lines":   matching,
+        "total_lines": len(raw_lines),
+    }

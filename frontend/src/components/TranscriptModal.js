@@ -4,7 +4,7 @@
  * Right panel : Master data accordion (sections load on click)
  */
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -232,8 +232,124 @@ function ObjectDumpMessage({ content, bubbleStyle }) {
   );
 }
 
-function ToolMessage({ content, time }) {
-  const [open, setOpen] = useState(false);
+// ── Chrome DevTools-style JSON tree viewer ────────────────────────────────────
+
+function JsonPrimitive({ value }) {
+  if (value === null)      return <span style={{ color: '#6b7280' }}>null</span>;
+  if (value === undefined) return <span style={{ color: '#6b7280' }}>undefined</span>;
+  if (typeof value === 'boolean')
+    return <span style={{ color: '#2563eb', fontWeight: 600 }}>{String(value)}</span>;
+  if (typeof value === 'number')
+    return <span style={{ color: '#dc2626' }}>{String(value)}</span>;
+  return <span style={{ color: '#16a34a' }}>"{String(value)}"</span>;
+}
+
+function JsonTreeNode({ keyName, value, depth, defaultOpen }) {
+  const isArr = Array.isArray(value);
+  const isObj = value !== null && typeof value === 'object' && !isArr;
+  const isComplex = isArr || isObj;
+
+  // Auto-open depth 0 and 1; collapse deeper
+  const [open, setOpen] = useState(
+    defaultOpen !== undefined ? defaultOpen : depth <= 1
+  );
+
+  const childKeys = isComplex ? Object.keys(value) : [];
+  const count     = childKeys.length;
+
+  const badge = isArr
+    ? `[${count} item${count !== 1 ? 's' : ''}]`
+    : `{${count} prop${count !== 1 ? 's' : ''}}`;
+
+  const openBracket  = isArr ? '[' : '{';
+  const closeBracket = isArr ? ']' : '}';
+
+  const keyStyle = {
+    color: '#1e40af', fontWeight: 600, fontFamily: 'monospace', fontSize: '.7rem',
+  };
+  const bracketStyle = { color: '#374151', fontFamily: 'monospace', fontSize: '.7rem' };
+  const toggleStyle  = {
+    background: 'none', border: 'none', cursor: 'pointer',
+    padding: 0, marginRight: '.2rem', fontSize: '.65rem', color: '#6b7280', lineHeight: 1,
+  };
+
+  if (!isComplex) {
+    return (
+      <div style={{ paddingLeft: depth * 14, lineHeight: 1.7, fontFamily: 'monospace', fontSize: '.7rem' }}>
+        {keyName !== undefined && (
+          <span style={keyStyle}>"{keyName}": </span>
+        )}
+        <JsonPrimitive value={value} />
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ paddingLeft: depth === 0 ? 0 : 14, lineHeight: 1.7 }}>
+      <div style={{ display: 'flex', alignItems: 'center', cursor: 'pointer' }}
+           onClick={() => setOpen(o => !o)}>
+        <button style={toggleStyle}>{open ? '▼' : '▶'}</button>
+        {keyName !== undefined && (
+          <span style={keyStyle}>"{keyName}": </span>
+        )}
+        <span style={bracketStyle}>{openBracket}</span>
+        {!open && (
+          <>
+            <span style={{
+              fontSize: '.62rem', color: '#6b7280', background: '#f1f5f9',
+              borderRadius: 3, padding: '0 5px', margin: '0 .25rem',
+              fontFamily: 'monospace',
+            }}>{badge}</span>
+            <span style={bracketStyle}>{closeBracket}</span>
+          </>
+        )}
+      </div>
+      {open && (
+        <>
+          {isArr
+            ? value.map((v, idx) => (
+                <JsonTreeNode key={idx} keyName={String(idx)} value={v} depth={depth + 1} />
+              ))
+            : childKeys.map(k => (
+                <JsonTreeNode key={k} keyName={k} value={value[k]} depth={depth + 1} />
+              ))
+          }
+          <div style={{ paddingLeft: 0, fontFamily: 'monospace', fontSize: '.7rem', color: '#374151' }}>
+            {closeBracket}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function parseJsonSafe(s) {
+  if (!s) return null;
+  const t = s.trim();
+  try { return JSON.parse(t); } catch {}
+  try {
+    const repaired = t.replace(/"(\s*)"/g, (_, w) => '",' + w + '"');
+    return JSON.parse(repaired);
+  } catch {}
+  return null;
+}
+
+function ToolMessage({ messageId, content, time, response, sessionId, createdAt, helpdeskType, entity }) {
+  const [open,        setOpen]        = useState(false);
+  const [respOpen,    setRespOpen]    = useState(false);
+  const [plugOpen,    setPlugOpen]    = useState(false);
+  const [plugData,    setPlugData]    = useState(null);   // null=not fetched, object=data
+  const [plugError,   setPlugError]   = useState(null);
+  const [plugLoading, setPlugLoading] = useState(false);
+  const [expandedLines, setExpandedLines] = useState(new Set()); // header expanded
+
+  const toggleLine = (i) =>
+    setExpandedLines(prev => {
+      const next = new Set(prev);
+      next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
+
   let parsed = null;
   let label = 'Tool';
   try {
@@ -241,12 +357,33 @@ function ToolMessage({ content, time }) {
     label = parsed?.name || parsed?.type || parsed?.function_name || 'Tool';
   } catch { label = 'Tool'; }
 
+  const handlePlugClick = () => {
+    if (!plugOpen && plugData === null && !plugLoading) {
+      setPlugLoading(true);
+      const params = new URLSearchParams({
+        tool_name:     label,
+        created_at:    createdAt || '',
+        helpdesk_type: helpdeskType || 'merchant',
+      });
+      axios.get(`${API_BASE}/helpdesk/plug-tool-response/${sessionId}?${params}`)
+        .then(res => setPlugData(res.data))
+        .catch(e  => setPlugError(e.response?.data?.detail || 'Failed to fetch Plug logs.'))
+        .finally(() => setPlugLoading(false));
+    }
+    // Reset all expanded states when closing so next open starts fully collapsed
+    setPlugOpen(o => {
+      if (o) setExpandedLines(new Set());
+      return !o;
+    });
+  };
+
   return (
     <div style={{ alignSelf: 'flex-start', maxWidth: '88%' }}>
       <div style={{ fontSize: '.65rem', color: '#94a3b8', marginBottom: '.2rem' }}>
         ⚙️ Tool · {time}
       </div>
       <div style={{ border: '1px solid #e0e7ff', borderRadius: '8px 8px 8px 2px', overflow: 'hidden' }}>
+        {/* ── Request ── */}
         <button
           onClick={() => setOpen(o => !o)}
           style={{
@@ -274,7 +411,204 @@ function ToolMessage({ content, time }) {
             {parsed ? JSON.stringify(parsed, null, 2) : content}
           </pre>
         )}
+        {/* ── Response ── */}
+        {response && (
+          <>
+            <button
+              onClick={() => setRespOpen(o => !o)}
+              style={{
+                width: '100%', background: respOpen ? '#f0fdf4' : '#f8fafc',
+                border: 'none', borderTop: '1px solid #e0e7ff', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: '.4rem',
+                padding: '.3rem .65rem', textAlign: 'left',
+              }}
+            >
+              <span style={{ fontSize: '.67rem', fontWeight: 700, color: '#16a34a', flexShrink: 0 }}>
+                📥 Response
+              </span>
+              <span style={{ fontSize: '.67rem', color: '#94a3b8', flex: 1 }}>
+                {respOpen ? 'hide' : 'show'}
+              </span>
+              <span style={{ fontSize: '.68rem', color: '#94a3b8',
+                transform: respOpen ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}>▾</span>
+            </button>
+            {respOpen && (
+              <div style={{
+                margin: 0, padding: '.55rem .75rem',
+                background: '#f0fdf4',
+                borderTop: '1px solid #bbf7d0', maxHeight: 340, overflowY: 'auto',
+              }}>
+                {(() => {
+                  const parsed = parseJsonSafe(response);
+                  if (parsed !== null)
+                    return <JsonTreeNode value={parsed} depth={0} />;
+                  return (
+                    <pre style={{
+                      margin: 0, fontSize: '.71rem', color: '#15803d',
+                      lineHeight: 1.55, whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                    }}>
+                      {(response || '').replace(/\r\n/g, '\n')}
+                    </pre>
+                  );
+                })()}
+              </div>
+            )}
+          </>
+        )}
+        {/* ── Plug Response (lazy-fetched from Loki) ── */}
+        {sessionId && label !== 'Tool' && (
+          <>
+            <button
+              onClick={handlePlugClick}
+              style={{
+                width: '100%', background: plugOpen ? '#fefce8' : '#f8fafc',
+                border: 'none', borderTop: '1px solid #e0e7ff', cursor: 'pointer',
+                display: 'flex', alignItems: 'center', gap: '.4rem',
+                padding: '.3rem .65rem', textAlign: 'left',
+              }}
+            >
+              <span style={{ fontSize: '.67rem', fontWeight: 700, color: '#b45309', flexShrink: 0 }}>
+                🔌 Plug
+              </span>
+              <span style={{ fontSize: '.67rem', color: '#94a3b8', flex: 1 }}>
+                {plugLoading ? 'fetching…' : plugOpen ? 'hide' : 'show raw logs'}
+              </span>
+              <span style={{ fontSize: '.68rem', color: '#94a3b8',
+                transform: plugOpen ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}>▾</span>
+            </button>
+            {plugOpen && (
+              <div style={{
+                borderTop: '1px solid #fef08a', background: '#fefce8',
+                padding: '.5rem .75rem', maxHeight: 340, overflowY: 'auto',
+              }}>
+                {plugLoading && (
+                  <div style={{ fontSize: '.72rem', color: '#92400e' }}>Loading Plug logs…</div>
+                )}
+                {plugError && (
+                  <div style={{ fontSize: '.72rem', color: '#dc2626' }}>{plugError}</div>
+                )}
+                {plugData && (
+                  <>
+                    <div style={{ fontSize: '.65rem', color: '#a16207', marginBottom: '.4rem' }}>
+                      trace: {plugData.trace_id} · {plugData.log_lines?.length || 0} matching lines / {plugData.total_lines} total
+                    </div>
+                    {(plugData.log_lines || []).length === 0 ? (
+                      <div style={{ fontSize: '.72rem', color: '#92400e', fontStyle: 'italic' }}>
+                        No log lines found mentioning "{label}".
+                      </div>
+                    ) : (
+                      plugData.log_lines.map((line, i) => {
+                        // Extract prefix (timestamp, class, etc.) and JSON payload
+                        const braceIdx = line.indexOf('{');
+                        const prefix   = braceIdx > 0 ? line.slice(0, braceIdx).trim() : line;
+                        const jsonStr  = braceIdx >= 0 ? line.slice(braceIdx) : null;
+                        let pretty = null;
+                        if (jsonStr) {
+                          try { pretty = JSON.stringify(JSON.parse(jsonStr), null, 2); } catch {}
+                          if (!pretty) {
+                            try {
+                              const repaired = jsonStr.replace(/"(\s*)"/g, (_, w) => '",' + w + '"');
+                              pretty = JSON.stringify(JSON.parse(repaired), null, 2);
+                            } catch {}
+                          }
+                        }
+                        const isExpanded     = expandedLines.has(i);
+                        const fullText       = pretty || (jsonStr ?? line);
+                        const previewLines   = fullText.split('\n').slice(0, 4).join('\n');
+                        const hasMore        = fullText.split('\n').length > 4;
+
+                        // Extract meaningful summary from the prefix:
+                        // format: "TIMESTAMP [traceId=...] [THREAD] LEVEL CLASS - MESSAGE"
+                        // Show: timestamp · class · message (not the thread/traceId noise)
+                        const tsMatch    = prefix.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/);
+                        const classMatch = prefix.match(/\]\s+\w+\s+([\w.]+)\s+-\s+(.+)$/);
+                        const headerTs   = tsMatch ? tsMatch[1].slice(11) : ''; // HH:MM:SS only
+                        const headerClass = classMatch
+                          ? classMatch[1].split('.').slice(-1)[0]   // last segment of class
+                          : null;
+                        const headerMsg  = classMatch ? classMatch[2].trim() : prefix;
+
+                        return (
+                          <div key={i} style={{
+                            marginBottom: '.4rem',
+                            border: '1px solid #fde68a', borderRadius: 5, overflow: 'hidden',
+                          }}>
+                            {/* Header row — click to show/hide JSON area */}
+                            <button
+                              onClick={() => toggleLine(i)}
+                              style={{
+                                width: '100%', background: isExpanded ? '#fef9c3' : '#fffbeb',
+                                border: 'none', cursor: 'pointer',
+                                display: 'flex', alignItems: 'center', gap: '.4rem',
+                                padding: '.3rem .5rem', textAlign: 'left',
+                              }}
+                            >
+                              <span style={{ fontSize: '.62rem', color: '#92400e', flexShrink: 0, fontFamily: 'monospace' }}>
+                                {headerTs}
+                              </span>
+                              {headerClass && (
+                                <span style={{
+                                  fontSize: '.62rem', fontWeight: 700, color: '#b45309',
+                                  background: '#fef3c7', borderRadius: 3,
+                                  padding: '0 5px', flexShrink: 0, fontFamily: 'monospace',
+                                }}>
+                                  {headerClass}
+                                </span>
+                              )}
+                              <span style={{
+                                fontSize: '.63rem', color: '#a16207', flex: 1,
+                                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                              }}>
+                                {headerMsg}
+                              </span>
+                              <span style={{ fontSize: '.65rem', color: '#a16207', flexShrink: 0 }}>
+                                {isExpanded ? '▲' : '▼'}
+                              </span>
+                            </button>
+                            {/* JSON area — shown directly when header is expanded */}
+                            {isExpanded && (
+                              <div style={{
+                                borderTop: '1px solid #fde68a',
+                                background: '#fffbeb',
+                                padding: '.4rem .55rem',
+                                maxHeight: 400, overflowY: 'auto',
+                              }}>
+                                {(() => {
+                                  const parsedJson = jsonStr ? parseJsonSafe(jsonStr) : null;
+                                  if (parsedJson !== null)
+                                    return <JsonTreeNode value={parsedJson} depth={0} />;
+                                  return (
+                                    <pre style={{
+                                      margin: 0, fontSize: '.68rem', color: '#78350f',
+                                      whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                                    }}>
+                                      {fullText}
+                                    </pre>
+                                  );
+                                })()}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </>
+        )}
       </div>
+      {messageId && sessionId && (
+        <ShowPromptButton
+          messageId={messageId}
+          sessionId={sessionId}
+          createdAt={createdAt}
+          helpdeskType={helpdeskType}
+          entity={entity}
+          messageType="function_call"
+        />
+      )}
     </div>
   );
 }
@@ -389,6 +723,401 @@ function ListenButton({ ticketId, createdAt, recordingPath }) {
       )}
       {DownloadBtn}
     </div>
+  );
+}
+
+// ── Show Prompt inline viewer ─────────────────────────────────────────────────
+
+/** Unescape log-serialised prompt back to readable text */
+function _unescape(raw) {
+  return raw
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    // surrogate pairs first (emoji like \uD83D\uDD0A → 🔊)
+    .replace(/\\u([dD][89aAbB][0-9a-fA-F]{2})\\u([dD][c-fC-F][0-9a-fA-F]{2})/g, (_, hi, lo) =>
+      String.fromCodePoint(0x10000 + ((parseInt(hi, 16) - 0xD800) << 10) + (parseInt(lo, 16) - 0xDC00))
+    )
+    // remaining BMP chars (Hindi etc.)
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+/** Split LLaMA-format prompt into role blocks */
+function _parseLlamaBlocks(raw) {
+  const text = _unescape(raw);
+  const blocks = [];
+
+  // ── Gemma format: <start_of_turn>role\n...<end_of_turn> ──
+  if (text.includes('<start_of_turn>')) {
+    const parts = text.split(/<start_of_turn>([\w]+)\n?/);
+    if (parts[0].trim()) blocks.push({ role: 'preamble', content: parts[0].trim() });
+    for (let i = 1; i < parts.length; i += 2) {
+      const role    = parts[i] || 'unknown';
+      const content = (parts[i + 1] || '').replace(/<end_of_turn>/g, '').trim();
+      blocks.push({ role, content });
+    }
+    return blocks;
+  }
+
+  // ── Llama / GPT-OSS format: <|start_header_id|>role<|end_header_id|> ──
+  const parts = text.split(/<\|start_header_id\|>([\w]+)<\|end_header_id\|>/);
+  if (parts[0].replace(/<\|begin_of_text\|>/g, '').trim())
+    blocks.push({ role: 'preamble', content: parts[0].trim() });
+  for (let i = 1; i < parts.length; i += 2) {
+    const role    = parts[i] || 'unknown';
+    const content = (parts[i + 1] || '').replace(/<\|eot_id\|>/g, '').trim();
+    blocks.push({ role, content });
+  }
+  return blocks;
+}
+
+/** Split system prompt text into labelled subsections at ** header ** markers */
+function _parseSystemSections(text) {
+  // Split on ** header ** markers without requiring surrounding newlines
+  const parts = text.split(/(\*{1,4}[^\n*]{3,}\*{1,4})/);
+  const secs  = [];
+  const pre   = parts[0].trim();
+  if (pre) secs.push({ title: 'Introduction', content: pre });
+  for (let i = 1; i < parts.length; i += 2) {
+    const title   = parts[i].replace(/\*/g, '').trim();
+    const content = (parts[i + 1] || '').trim();
+    if (title && content) secs.push({ title, content });
+  }
+  return secs;
+}
+
+/** Split knowledge-base text into subsections at *Section N:…* markers */
+function _parseKBSections(text) {
+  // Split on *Section...* markers without requiring surrounding newlines —
+  // handles all whitespace variants (single/double/triple newlines or none)
+  const parts = text.split(/(\*\*?Section[^*\n]+\*\*?)/);
+  const secs  = [];
+  const pre   = parts[0]
+    .replace(/\*+\s*Start of Knowledge\s*[Bb]ase\s*\*+/gi, '')
+    .trim();
+  if (pre) secs.push({ title: 'Overview', content: pre });
+  for (let i = 1; i < parts.length; i += 2) {
+    const title   = parts[i].replace(/\*/g, '').trim();
+    const content = (parts[i + 1] || '')
+      .replace(/\*+\s*End of Knowledge\s*[Bb]ase\s*\*+/gi, '')
+      .trim();
+    if (title && content) secs.push({ title, content });
+  }
+  return secs;
+}
+
+/**
+ * Build the two top-level sections (System Prompt, Knowledge Base)
+ * plus an optional Conversation History section.
+ */
+function _buildTopSections(raw) {
+  const blocks = _parseLlamaBlocks(raw);
+  const result = [];
+  let userIdx = 0, botIdx = 0;
+  const convSubs = [];
+
+  for (const b of blocks) {
+    if (b.role === 'system') {
+      result.push({
+        key: 'system', title: 'System Prompt', icon: '🔧',
+        color: '#2563eb', lightBg: '#eff6ff', border: '#bfdbfe',
+        chars: b.content.length,
+        subsections: _parseSystemSections(b.content),
+      });
+    } else if (b.role === 'user' && /knowledge\s*base/i.test(b.content)) {
+      result.push({
+        key: 'kb', title: 'Knowledge Base', icon: '📚',
+        color: '#16a34a', lightBg: '#f0fdf4', border: '#bbf7d0',
+        chars: b.content.length,
+        subsections: _parseKBSections(b.content),
+      });
+    } else if (b.role === 'user') {
+      userIdx++;
+      convSubs.push({ title: `User Turn ${userIdx}`, content: b.content });
+    } else if (b.role === 'assistant') {
+      botIdx++;
+      convSubs.push({ title: `Bot Turn ${botIdx}`, content: b.content });
+    }
+  }
+
+  if (convSubs.length) {
+    result.push({
+      key: 'conv', title: 'Conversation History', icon: '💬',
+      color: '#7c3aed', lightBg: '#f5f3ff', border: '#ddd6fe',
+      chars: convSubs.reduce((s, c) => s + c.content.length, 0),
+      subsections: convSubs,
+    });
+  }
+
+  return result;
+}
+
+// ── Inline prompt viewer (2-level vertical accordion) ────────────────────────
+
+function InlinePromptViewer({ raw, meta, onClose }) {
+  const topSecs             = useMemo(() => _buildTopSections(raw), [raw]);
+  const [openSec,  setOpenSec]  = useState(null);   // at most one section open
+  const [openSub,  setOpenSub]  = useState(null);   // at most one subsection open
+  const [copied,   setCopied]   = useState(null);
+
+  function toggleSec(key) {
+    setOpenSec(prev => prev === key ? null : key);
+    setOpenSub(null);   // collapse any open subsection when switching sections
+  }
+
+  function toggleSub(key) {
+    setOpenSub(prev => prev === key ? null : key);
+  }
+
+  function copyText(key, text) {
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(key); setTimeout(() => setCopied(null), 2000);
+    });
+  }
+
+  return (
+    <div style={{
+      width: '100%', marginTop: '.4rem',
+      border: '1px solid #1e293b', borderRadius: 10, overflow: 'hidden',
+      background: '#0f172a',
+    }}>
+      {/* ── Header bar ── */}
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+        padding: '.4rem .75rem', background: '#020617',
+        borderBottom: '1px solid #1e293b',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '.45rem' }}>
+          <span style={{ fontSize: '.75rem', fontWeight: 700, color: '#f8fafc' }}>📋 Prompt</span>
+          {meta?.model && (
+            <span style={{ fontSize: '.6rem', background: '#1e3a5f', color: '#7dd3fc',
+              borderRadius: 4, padding: '1px 6px', fontWeight: 600 }}>
+              {meta.model.split('(')[0].trim()}
+            </span>
+          )}
+          {meta?.prompt_name && (
+            <span style={{ fontSize: '.6rem', background: '#14532d', color: '#86efac',
+              borderRadius: 4, padding: '1px 6px', fontWeight: 600 }}>
+              {meta.prompt_name}
+            </span>
+          )}
+        </div>
+        <div style={{ display: 'flex', gap: '.3rem', alignItems: 'center' }}>
+          <button
+            onClick={() => copyText('all', raw)}
+            style={{
+              background: copied === 'all' ? '#14532d' : '#1e293b',
+              border: '1px solid #334155',
+              color: copied === 'all' ? '#86efac' : '#94a3b8',
+              borderRadius: 5, padding: '2px 8px', fontSize: '.65rem',
+              fontWeight: 600, cursor: 'pointer',
+            }}
+          >{copied === 'all' ? '✓' : '⎘'}</button>
+          <button
+            onClick={onClose}
+            style={{
+              background: '#1e293b', border: '1px solid #334155', borderRadius: 5,
+              width: 22, height: 22, cursor: 'pointer', color: '#64748b', fontSize: '.8rem',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >✕</button>
+        </div>
+      </div>
+
+      {/* ── Accordion body ── */}
+      <div style={{ maxHeight: 500, overflowY: 'auto' }}>
+        {topSecs.map((sec, si) => {
+          const isSecOpen = openSec === sec.key;
+          return (
+            <div key={sec.key} style={{ borderBottom: '1px solid #1e293b' }}>
+
+              {/* ── Top-level section row ── */}
+              <button
+                onClick={() => toggleSec(sec.key)}
+                style={{
+                  width: '100%', background: isSecOpen ? '#0f1f35' : '#0a0f1a',
+                  border: 'none', cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', gap: '.6rem',
+                  padding: '.6rem .85rem', textAlign: 'left',
+                  borderLeft: isSecOpen ? `3px solid ${sec.color}` : '3px solid transparent',
+                  transition: 'background .12s',
+                  position: 'sticky', top: 0, zIndex: 10,
+                  borderBottom: isSecOpen ? '1px solid #1e293b' : 'none',
+                  boxShadow: isSecOpen ? '0 2px 8px rgba(0,0,0,.4)' : 'none',
+                }}
+                onMouseEnter={e => { if (!isSecOpen) e.currentTarget.style.background = '#111827'; }}
+                onMouseLeave={e => { if (!isSecOpen) e.currentTarget.style.background = isSecOpen ? '#0f1f35' : '#0a0f1a'; }}
+              >
+                <span style={{ fontSize: '1rem', flexShrink: 0 }}>{sec.icon}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: '.8rem', fontWeight: 700, color: '#f1f5f9' }}>
+                    {sec.title}
+                  </div>
+                  <div style={{ fontSize: '.65rem', color: '#64748b', marginTop: 1 }}>
+                    {sec.subsections.length} section{sec.subsections.length !== 1 ? 's' : ''}
+                    &nbsp;·&nbsp;{(sec.chars / 1000).toFixed(1)}K chars
+                  </div>
+                </div>
+                <span style={{
+                  fontSize: '.75rem', color: sec.color, fontWeight: 700, flexShrink: 0,
+                  transform: isSecOpen ? 'rotate(90deg)' : 'none', transition: 'transform .15s',
+                }}>▶</span>
+              </button>
+
+              {/* ── Subsection rows (visible when section expanded) ── */}
+              {isSecOpen && (
+                <div style={{ background: '#080d14' }}>
+                  {sec.subsections.map((sub, subi) => {
+                    const subKey   = `${sec.key}:${subi}`;
+                    const isSubOpen = openSub === subKey;
+                    return (
+                      <div key={subi} style={{ borderTop: '1px solid #1e293b' }}>
+
+                        {/* Subsection header — sticky below parent section header (~46px) */}
+                        <button
+                          onClick={() => toggleSub(subKey)}
+                          style={{
+                            width: '100%', background: isSubOpen ? '#0d1520' : '#080d14',
+                            border: 'none', cursor: 'pointer',
+                            display: 'flex', alignItems: 'center', gap: '.5rem',
+                            padding: '.45rem .85rem .45rem 2rem', textAlign: 'left',
+                            transition: 'background .1s',
+                            position: 'sticky', top: 46, zIndex: 9,
+                            borderBottom: isSubOpen ? `1px solid ${sec.color}33` : 'none',
+                            boxShadow: isSubOpen ? '0 2px 6px rgba(0,0,0,.35)' : 'none',
+                          }}
+                          onMouseEnter={e => { if (!isSubOpen) e.currentTarget.style.background = '#0f172a'; }}
+                          onMouseLeave={e => { if (!isSubOpen) e.currentTarget.style.background = isSubOpen ? '#0d1520' : '#080d14'; }}
+                        >
+                          <span style={{
+                            fontSize: '.55rem', color: sec.color, flexShrink: 0,
+                            transform: isSubOpen ? 'rotate(90deg)' : 'none', transition: 'transform .15s',
+                          }}>▶</span>
+                          <span style={{ flex: 1, fontSize: '.75rem', color: '#cbd5e1', fontWeight: isSubOpen ? 600 : 400 }}>
+                            {sub.title}
+                          </span>
+                          <span style={{ fontSize: '.62rem', color: '#334155', flexShrink: 0 }}>
+                            {sub.content.length.toLocaleString()} chars
+                          </span>
+                        </button>
+
+                        {/* Subsection detail — markdown */}
+                        {isSubOpen && (
+                          <div style={{ position: 'relative' }}>
+                            {/* copy button for this subsection */}
+                            <button
+                              onClick={() => copyText(subKey, sub.content)}
+                              style={{
+                                position: 'absolute', top: '.5rem', right: '.65rem', zIndex: 1,
+                                background: copied === subKey ? '#14532d' : '#1e293b',
+                                border: '1px solid #334155',
+                                color: copied === subKey ? '#86efac' : '#64748b',
+                                borderRadius: 4, padding: '2px 7px',
+                                fontSize: '.6rem', fontWeight: 600, cursor: 'pointer',
+                              }}
+                            >{copied === subKey ? '✓' : '⎘'}</button>
+
+                            <div
+                              className="md-bubble prompt-md"
+                              style={{
+                                padding: '.75rem 2.5rem .75rem 2.5rem',
+                                fontSize: '.77rem', lineHeight: 1.75, color: '#e2e8f0',
+                                borderTop: `1px solid ${sec.color}33`,
+                              }}
+                            >
+                              <ReactMarkdown remarkPlugins={[remarkGfm]}>{sub.content}</ReactMarkdown>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── Footer ── */}
+      <div style={{
+        background: '#020617', borderTop: '1px solid #1e293b',
+        padding: '.3rem .75rem', display: 'flex', alignItems: 'center', gap: '.5rem',
+      }}>
+        <span style={{ fontSize: '.62rem', color: '#334155' }}>{raw.length.toLocaleString()} chars total</span>
+        {meta?.log_time && <span style={{ fontSize: '.62rem', color: '#334155' }}>· logged {meta.log_time}</span>}
+        {meta?.trace_id && (
+          <span style={{ fontSize: '.62rem', color: '#334155', fontFamily: 'monospace' }}>
+            · {meta.trace_id.slice(0, 16)}…
+          </span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ShowPromptButton({ messageId, sessionId, createdAt, helpdeskType, entity, messageType }) {
+  const [open,    setOpen]    = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [data,    setData]    = useState(null);
+  const [error,   setError]   = useState(null);
+
+  function handleClick() {
+    if (open && data) { setOpen(false); return; }   // toggle off
+    if (data) { setOpen(true); return; }             // already fetched
+    setOpen(true);
+    setLoading(true);
+    axios.get(`${API_BASE}/helpdesk/message-prompt/${messageId}`, {
+      params: { session_id: sessionId, created_at: createdAt, helpdesk_type: helpdeskType, entity: entity || '', message_type: messageType || 'message' },
+    })
+      .then(res => setData(res.data))
+      .catch(e  => setError(e.response?.data?.detail || 'Failed to fetch prompt from Loki.'))
+      .finally(() => setLoading(false));
+  }
+
+  return (
+    <>
+      <button
+        onClick={handleClick}
+        style={{
+          marginTop: '.35rem',
+          background: open ? '#eff6ff' : 'none',
+          border: `1px solid ${open ? '#2563eb' : '#e2e8f0'}`,
+          borderRadius: 20, cursor: 'pointer',
+          padding: '2px 10px', fontSize: '.68rem', fontWeight: 600,
+          color: open ? '#2563eb' : '#64748b',
+          display: 'inline-flex', alignItems: 'center', gap: 4,
+          transition: 'all .15s',
+        }}
+        onMouseEnter={e => { if (!open) { e.currentTarget.style.borderColor = '#2563eb'; e.currentTarget.style.color = '#2563eb'; }}}
+        onMouseLeave={e => { if (!open) { e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.color = '#64748b'; }}}
+      >
+        📋 {open ? 'Hide Prompt' : 'Show Prompt'}
+      </button>
+
+      {open && loading && (
+        <div style={{ marginTop: '.4rem', display: 'flex', alignItems: 'center', gap: '.5rem',
+          color: '#94a3b8', fontSize: '.75rem' }}>
+          <div style={{ width: 14, height: 14, border: '2px solid #e2e8f0',
+            borderTopColor: '#2563eb', borderRadius: '50%', animation: 'spin .7s linear infinite' }} />
+          Fetching prompt from Loki…
+        </div>
+      )}
+
+      {open && error && (
+        <div style={{ marginTop: '.4rem', background: '#fef2f2', border: '1px solid #fca5a5',
+          borderRadius: 8, padding: '.5rem .75rem', color: '#dc2626', fontSize: '.75rem' }}>
+          ⚠️ {error}
+        </div>
+      )}
+
+      {open && data?.prompt && (
+        <InlinePromptViewer
+          raw={data.prompt}
+          meta={{ model: data.model, prompt_name: data.prompt_name, trace_id: data.trace_id, log_time: data.log_time }}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </>
   );
 }
 
@@ -875,9 +1604,64 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
       .finally(() => setFnLoading(false));
   }, [ticketId]);
 
-  const allVisible  = messages.filter(m => !m.hidden);
-  const toolCount   = allVisible.filter(m => isToolMsg(m.content)).length;
-  const visible     = showTools ? allVisible : allVisible.filter(m => !isToolMsg(m.content));
+  const allVisible = messages.filter(m => !m.hidden);
+
+  // Pair assistant tool-call messages with their response JSON blobs.
+  // Responses are stored as role:user / type:TEXT JSON blobs.
+  //
+  // Two-pass strategy to avoid earlier calls stealing same-timestamp responses:
+  //  Pass 1 (high-confidence): match same-timestamp pairs — the response and its
+  //    tool call share the exact same created_at (DB returns response first due to ULID order).
+  //  Pass 2 (forward search): for remaining unmatched calls, scan forward skipping
+  //    non-tool messages, stopping at the next assistant tool call.
+  const { callToResponse, responseIds } = useMemo(() => {
+    const callToResp = {};
+    const respIds    = new Set();
+    const usedIds    = new Set();
+
+    // Pass 1: same-timestamp matches
+    for (let i = 0; i < allVisible.length; i++) {
+      const msg = allVisible[i];
+      if (!isToolMsg(msg.content) || msg.role !== 'assistant') continue;
+      for (let j = i - 1; j >= 0; j--) {
+        const prev = allVisible[j];
+        if (prev.created_at !== msg.created_at) break;
+        if (isToolMsg(prev.content) && prev.role !== 'assistant' && !usedIds.has(prev.message_id)) {
+          callToResp[msg.message_id] = prev;
+          respIds.add(prev.message_id);
+          usedIds.add(prev.message_id);
+          break;
+        }
+      }
+    }
+
+    // Pass 2: forward search for still-unmatched calls
+    for (let i = 0; i < allVisible.length; i++) {
+      const msg = allVisible[i];
+      if (!isToolMsg(msg.content) || msg.role !== 'assistant') continue;
+      if (callToResp[msg.message_id]) continue; // already matched in pass 1
+      for (let j = i + 1; j < allVisible.length; j++) {
+        const next = allVisible[j];
+        if (!isToolMsg(next.content)) continue; // skip non-tool messages
+        if (next.role !== 'assistant' && !usedIds.has(next.message_id)) {
+          callToResp[msg.message_id] = next;
+          respIds.add(next.message_id);
+          usedIds.add(next.message_id);
+        }
+        break;
+      }
+    }
+
+    return { callToResponse: callToResp, responseIds: respIds };
+  }, [allVisible]);
+
+  // Count only call-side tool messages (not the response blobs)
+  const toolCount = allVisible.filter(m => isToolMsg(m.content) && m.role === 'assistant').length;
+
+  // When tools visible: show calls but suppress standalone response entries (shown inline)
+  const visible = showTools
+    ? allVisible.filter(m => !responseIds.has(m.message_id))
+    : allVisible.filter(m => !isToolMsg(m.content));
 
   return (
     /* ── Backdrop ── */
@@ -1046,9 +1830,21 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
 
               {visible.map(msg => {
                 if (isToolMsg(msg.content)) {
-                  return <ToolMessage key={msg.message_id} content={msg.content} time={fmt(msg.created_at)} />;
+                  const respMsg = callToResponse[msg.message_id];
+                  return <ToolMessage
+                    key={msg.message_id}
+                    messageId={msg.message_id}
+                    content={msg.content}
+                    time={fmt(msg.created_at)}
+                    response={respMsg?.content}
+                    sessionId={ticketId}
+                    createdAt={msg.created_at}
+                    helpdeskType={helpdeskType}
+                    entity={msg.entity || ''}
+                  />;
                 }
                 const { label, bg, color, isUser } = roleMeta(msg.role);
+                const isBotMsg = !isUser && msg.role === 'assistant';
                 return (
                   <div key={msg.message_id}
                     style={{ display:'flex', flexDirection:'column',
@@ -1097,6 +1893,17 @@ export default function TranscriptModal({ ticketId, helpdeskType = 'merchant', s
                             fontSize:'.72rem', fontWeight:600 }}>{cta}</span>
                         ))}
                       </div>
+                    )}
+
+                    {/* Show Prompt CTA — bot messages only */}
+                    {isBotMsg && (
+                      <ShowPromptButton
+                        messageId={msg.message_id}
+                        sessionId={ticketId}
+                        createdAt={msg.created_at}
+                        helpdeskType={helpdeskType}
+                        entity={msg.entity || ''}
+                      />
                     )}
                   </div>
                 );

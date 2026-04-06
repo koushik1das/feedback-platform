@@ -25,7 +25,7 @@ from models import (
 from ingestion.aggregator import aggregate_feedback, get_channel_sample_counts
 from analysis.clustering import categorise_feedback
 from analysis.insights import generate_insights
-from ingestion.trino_helpdesk import fetch_helpdesk_insights, fetch_transcript, fetch_master_data, fetch_eval, fetch_function_calls, fetch_session_lookup, fetch_sessions_by_mid
+from ingestion.trino_helpdesk import fetch_helpdesk_insights, fetch_transcript, fetch_master_data, fetch_eval, fetch_function_calls, fetch_session_lookup, fetch_sessions_by_mid, fetch_social_media_insights
 from ingestion.helpbot import helpbot_chat
 from ingestion.loki import fetch_session_timeline
 from ingestion.trino_campaigns import fetch_campaign_list, fetch_campaign_analysis, fetch_ivr_insights, fetch_soundbox_insights
@@ -183,6 +183,19 @@ def analyse_helpdesk(request: HelpdeskAnalyseRequest):
         return InsightsResponse(**data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Trino query failed: {str(e)}")
+
+
+@router.get("/helpdesk/social-media", response_model=InsightsResponse, tags=["helpdesk"])
+def get_social_media_insights(
+    helpdesk_type: HelpdeskType = HelpdeskType.MERCHANT,
+    date_range: str = Query("last_7_days", pattern="^(yesterday|day_before_yesterday|last_7_days|last_30_days)$"),
+):
+    """Fetch aggregated social media ticket insights (role_type=3) grouped by issue category."""
+    try:
+        data = fetch_social_media_insights(helpdesk_type.value, date_range)
+        return InsightsResponse(**data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Social media query failed: {str(e)}")
 
 
 @router.get("/helpdesk/masterdata/{ticket_id}", response_model=MasterDataResponse, tags=["helpdesk"])
@@ -428,6 +441,69 @@ Rules:
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LLM call failed: {e}")
+
+
+@router.get("/helpdesk/session-prompts", tags=["helpdesk"])
+def get_session_prompts(
+    session_id:    str = Query(..., description="Session / ticket ID"),
+    date:          str = Query(..., description="IST date, e.g. 2026-03-29"),
+    helpdesk_type: str = Query(default="merchant"),
+):
+    """Return all Final-prompt log lines for a session on a given IST date (diagnostic)."""
+    from ingestion.loki import fetch_session_all_prompts
+    try:
+        return {"prompts": fetch_session_all_prompts(session_id, date, helpdesk_type)}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/helpdesk/message-prompt/{message_id}", tags=["helpdesk"])
+def get_message_prompt(
+    message_id:    str,
+    session_id:    str           = Query(..., description="Session / ticket ID"),
+    created_at:    str           = Query(..., description="Message created_at in UTC ISO format, e.g. 2026-03-28T18:49:31"),
+    helpdesk_type: str           = Query(default="merchant", description="'merchant' or 'customer'"),
+    entity:        str           = Query(default="", description="CstEntity from message meta.expTag, e.g. p4bpayoutandsettlement"),
+    message_type:  str           = Query(default="message", description="'function_call' or 'message'"),
+):
+    """Fetch the raw LLM prompt that generated a specific bot message, via Loki SearchAILogs."""
+    from ingestion.loki import fetch_message_prompt
+    try:
+        result = fetch_message_prompt(
+            session_id=session_id,
+            created_at_utc=created_at,
+            helpdesk_type=helpdesk_type,
+            entity=entity or None,
+            message_type=message_type,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prompt fetch failed: {str(e)}")
+
+
+@router.get("/helpdesk/plug-tool-response/{session_id}", tags=["helpdesk"])
+def get_plug_tool_response(
+    session_id:    str,
+    tool_name:     str           = Query(...,   description="Function/tool name, e.g. get_settlement_and_payment_information"),
+    created_at:    str           = Query(...,   description="Tool call created_at in UTC ISO format"),
+    helpdesk_type: str           = Query(default="merchant", description="'merchant' or 'customer'"),
+):
+    """Fetch raw Plug API response for a specific tool call from Loki AnalyzePlugWorkflow logs."""
+    from ingestion.loki import fetch_plug_tool_response
+    try:
+        result = fetch_plug_tool_response(
+            session_id=session_id,
+            tool_name=tool_name,
+            created_at_utc=created_at,
+            helpdesk_type=helpdesk_type,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Plug log fetch failed: {str(e)}")
 
 
 @router.get("/helpdesk/session-timeline-raw/{session_id}", tags=["helpdesk"])

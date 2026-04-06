@@ -481,6 +481,22 @@ tbody tr:hover { background: #fafafe; }
 .md-bubble pre code   { background: none; padding: 0; }
 .md-bubble h1, .md-bubble h2, .md-bubble h3 { font-weight: 700; margin: .4em 0 .2em; }
 
+/* ── Prompt modal dark markdown ──────────────────────────────── */
+.prompt-md p          { margin: 0 0 .5em; }
+.prompt-md p:last-child { margin-bottom: 0; }
+.prompt-md strong     { font-weight: 700; color: #fde68a; }
+.prompt-md em         { font-style: italic; color: #bae6fd; }
+.prompt-md ul, .prompt-md ol { padding-left: 1.4em; margin: .3em 0; }
+.prompt-md li         { margin-bottom: .25em; }
+.prompt-md code       { background: rgba(255,255,255,.08); border-radius: 4px; padding: 1px 5px; font-size: .85em; font-family: monospace; color: #86efac; }
+.prompt-md pre        { background: rgba(0,0,0,.3); border-radius: 6px; padding: .5rem .75rem; overflow-x: auto; margin: .4em 0; border: 1px solid #334155; }
+.prompt-md pre code   { background: none; padding: 0; color: #e2e8f0; }
+.prompt-md h1, .prompt-md h2, .prompt-md h3 { font-weight: 700; margin: .5em 0 .25em; color: #7dd3fc; }
+.prompt-md blockquote { border-left: 3px solid #475569; padding-left: .75rem; margin: .4em 0; color: #94a3b8; font-style: italic; }
+.prompt-md table      { border-collapse: collapse; width: 100%; margin: .5em 0; font-size: .85em; }
+.prompt-md th, .prompt-md td { border: 1px solid #334155; padding: .3rem .6rem; }
+.prompt-md th         { background: #1e293b; color: #7dd3fc; font-weight: 700; }
+
 /* ── Drawer ──────────────────────────────────────────────────── */
 @keyframes slideInRight {
   from { transform: translateX(100%); opacity: 0; }

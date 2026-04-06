@@ -16,7 +16,7 @@ const COLORS = [
 
 const RANK_BG = ['#fef9c3', '#f1f5f9', '#fef2f2'];
 
-const INITIAL_COMMENTS = 5;
+const INITIAL_COMMENTS = 10;
 const INITIAL_ISSUES   = 5;
 
 const LANG_LABELS = { hi:'HI', en:'EN', mr:'MR', ta:'TA', te:'TE', kn:'KN', bn:'BN', gu:'GU', pa:'PA', ml:'ML' };
@@ -31,7 +31,13 @@ const TONE_META = {
   satisfied:   { label: 'Satisfied',   bg: '#d1fae5', color: '#065f46' },
 };
 
-export default function IssueList({ issues, helpdeskType = 'merchant', showListenButton = false, recordingPath = 'obd', showTranscript = true }) {
+const EVAL_FILTERS = [
+  { key: 'lt30',  label: '< 30',    test: (s) => s !== null && s < 30 },
+  { key: '30-70', label: '30 – 70', test: (s) => s !== null && s >= 30 && s <= 70 },
+  { key: 'gt70',  label: '> 70',    test: (s) => s !== null && s > 70 },
+];
+
+export default function IssueList({ issues, helpdeskType = 'merchant', showListenButton = false, recordingPath = 'obd', showTranscript = true, evalScoreFilter = null }) {
   const [expanded,       setExpanded]       = useState(null);
   const [showAllMap,     setShowAllMap]     = useState({});
   const [showAllIssues,  setShowAllIssues]  = useState(true);
@@ -79,13 +85,23 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
             const isOpen = expanded === iss.label;
             const color  = COLORS[idx % COLORS.length];
             const rankBg = RANK_BG[idx] || '#f8fafc';
-            const ticketIds   = iss.comment_ticket_ids     || [];
-            const tones       = iss.comment_tones           || [];
-            const langs       = iss.comment_langs           || [];
-            const dates       = iss.comment_dates           || [];
-            const ratings     = iss.comment_ratings         || [];
-            const fnCallsList  = iss.comment_function_calls  || [];
-            const durations    = iss.comment_durations        || [];
+            // Build filtered indices when an eval score filter is active
+            const evalScores  = iss.comment_eval_scores     || [];
+            const filterFn    = evalScoreFilter ? EVAL_FILTERS.find(f => f.key === evalScoreFilter)?.test : null;
+            const validIndices = filterFn
+              ? (iss.example_comments || []).map((_, i) => i).filter(i => filterFn(evalScores[i] ?? null))
+              : null;
+
+            const _pick = (arr) => validIndices ? validIndices.map(i => arr[i] ?? null) : (arr || []);
+
+            const filteredComments = _pick(iss.example_comments || []);
+            const ticketIds   = _pick(iss.comment_ticket_ids     || []);
+            const tones       = _pick(iss.comment_tones           || []);
+            const langs       = _pick(iss.comment_langs           || []);
+            const dates       = _pick(iss.comment_dates           || []);
+            const ratings     = _pick(iss.comment_ratings         || []);
+            const fnCallsList  = _pick(iss.comment_function_calls  || []);
+            const durations    = _pick(iss.comment_durations        || []);
 
             return (
               <div
@@ -143,13 +159,18 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
                 {/* ── Expanded VoC section ── */}
                 {isOpen && (
                   <div style={{ padding: '0 0.75rem 1rem 2.75rem', animation: 'fadeIn .15s ease' }}>
-                    {iss.example_comments?.length > 0 ? (
+                    {filteredComments?.length > 0 ? (
                       <>
                         <div style={{
                           fontSize: '.72rem', fontWeight: 700, textTransform: 'uppercase',
                           letterSpacing: '.06em', color, marginBottom: '.6rem',
                         }}>
                           Customer Voice
+                          {evalScoreFilter && (
+                            <span style={{ marginLeft: '.5rem', fontWeight: 500, color: '#64748b', textTransform: 'none', letterSpacing: 0 }}>
+                              (Eval score {EVAL_FILTERS.find(f => f.key === evalScoreFilter)?.label})
+                            </span>
+                          )}
                         </div>
 
                         {/* ── AI Summary ── */}
@@ -212,8 +233,8 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
                         })()}
 
                         {(showAllMap[iss.label]
-                          ? iss.example_comments
-                          : iss.example_comments.slice(0, INITIAL_COMMENTS)
+                          ? filteredComments
+                          : filteredComments.slice(0, INITIAL_COMMENTS)
                         ).map((comment, i) => {
                           const ticketId  = ticketIds[i] || null;
                           const tone      = (tones[i] || '').toLowerCase();
@@ -444,7 +465,7 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
                           );
                         })}
 
-                        {iss.example_comments.length > INITIAL_COMMENTS && (
+                        {filteredComments.length > INITIAL_COMMENTS && (
                           <button
                             onClick={(e) => toggleShowAll(iss.label, e)}
                             style={{
@@ -456,13 +477,15 @@ export default function IssueList({ issues, helpdeskType = 'merchant', showListe
                           >
                             {showAllMap[iss.label]
                               ? '▲ View less'
-                              : `▼ View ${iss.example_comments.length - INITIAL_COMMENTS} more`}
+                              : `▼ View ${filteredComments.length - INITIAL_COMMENTS} more`}
                           </button>
                         )}
                       </>
                     ) : (
                       <div style={{ fontSize: '.82rem', color: '#94a3b8', fontStyle: 'italic' }}>
-                        No sample quotes available for this issue.
+                        {evalScoreFilter
+                          ? `No VoCs with eval score ${EVAL_FILTERS.find(f => f.key === evalScoreFilter)?.label} for this issue.`
+                          : 'No sample quotes available for this issue.'}
                       </div>
                     )}
                   </div>
